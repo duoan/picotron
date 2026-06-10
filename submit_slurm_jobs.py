@@ -1,9 +1,9 @@
-from enum import Enum
-import os
-from jinja2 import Template
-import subprocess
 import json
-from typing import List
+import os
+import subprocess
+from enum import Enum
+
+from jinja2 import Template
 
 
 class Status(Enum):
@@ -36,10 +36,12 @@ class Job:
         """
         Read the status of the job from `status.txt` and return it
         """
-        is_existing = lambda value_to_check: any(value.value == value_to_check for value in Status.__members__.values())
+
+        def is_existing(value_to_check: str) -> bool:
+            return any(value.value == value_to_check for value in Status.__members__.values())
 
         status_file_path = os.path.join(self.root_path, "status.txt")
-        with open(status_file_path, "r") as f:
+        with open(status_file_path) as f:
             status = f.read()
             if not is_existing(status):
                 raise ValueError("Invalid status")
@@ -73,7 +75,7 @@ class Scheduler:
     def create_slurm_script(self, job: Job):
         # Submit job to the cluster (edit jinja)
         # load yaml config.yaml
-        with open(job.config, "r") as file:
+        with open(job.config) as file:
             config = json.load(file)
 
         max_gpu_per_node = 8
@@ -99,7 +101,7 @@ class Scheduler:
 
         base_path = os.path.join(os.getcwd(), "template/base_job.slurm")
 
-        with open(base_path, "r") as file:
+        with open(base_path) as file:
             base_job_file = file.read()
 
         base_job_template = Template(base_job_file)
@@ -111,7 +113,7 @@ class Scheduler:
 
         print(f"Slurm script created at {output_file_path}")
 
-    def launch_dependency(self, job_array: List[Job], env_vars):
+    def launch_dependency(self, job_array: list[Job], env_vars):
 
         prev_job_id = None
         for job in job_array:
@@ -144,7 +146,7 @@ class Scheduler:
         status_counts = {"init": 0, "pending": 0, "running": 0, "fail": 0, "oom": 0, "timeout": 0, "completed": 0}
 
         for status_file in status_files:
-            with open(status_file, "r") as f:
+            with open(status_file) as f:
                 status = f.read().strip()
                 if status in status_counts:
                     status_counts[status] += 1
@@ -163,7 +165,7 @@ class Scheduler:
         print(f"{'Total':<10} | {total:<6}")
 
 
-def submit_jobs(inp_dir, qos, hf_token, nb_slurm_array, only: str = None):
+def submit_jobs(inp_dir, qos, hf_token, nb_slurm_array, only: str | None = None):
     scheduler = Scheduler(inp_dir, qos)
 
     # TODO: batch into job arrays
@@ -202,7 +204,7 @@ def submit_jobs(inp_dir, qos, hf_token, nb_slurm_array, only: str = None):
         start = 0
 
         for i, nb_jobs in enumerate(distribution):
-            previous_job_id = None
+            _previous_job_id = None
             end = start + nb_jobs
             job_array = scheduler.job_lists[start:end]
 

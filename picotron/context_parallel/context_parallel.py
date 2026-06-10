@@ -1,8 +1,9 @@
 # Inspired by https://github.com/zhuzilin/ring-flash-attention
 import os
+from typing import Any
+
 import torch
 import torch.nn.functional as F
-from typing import Any, Optional, Tuple
 
 import picotron.process_group_manager as pgm
 from picotron.context_parallel.cp_communications import ContextCommunicate
@@ -110,8 +111,14 @@ class RingAttentionFunc(torch.autograd.Function):
         return dq, next_dk, next_dv, None, None
 
 
-def ring_attention_forward(q, k, v, sm_scale, is_causal):
-    batch_size, nheads, seqlen, d = q.shape
+def ring_attention_forward(
+    q,
+    k,
+    v,
+    sm_scale,
+    is_causal,
+):
+    batch_size, nheads, seqlen, _ = q.shape
     S = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
 
     if is_causal:
@@ -125,45 +132,45 @@ def ring_attention_forward(q, k, v, sm_scale, is_causal):
     exp_sum = torch.sum(exp_S, dim=-1, keepdim=True)
     log_sum_exp = torch.log(exp_sum) + S_max
     P = exp_S / exp_sum
-    O = torch.matmul(P, v)
-    return O, log_sum_exp.squeeze(-1)
+    out = torch.matmul(P, v)
+    return out, log_sum_exp.squeeze(-1)
 
 
-def ring_attention_backward(dO, Q, K, V, O, softmax_lse, sm_scale, is_causal):
-    batch_size, nheads, seqlen, d = Q.shape
+def ring_attention_backward(dout, q, k, v, out, softmax_lse, sm_scale, is_causal):
+    _, _, seqlen, _ = q.shape
 
     # Recreate S and P from log_sum_exp
-    S = torch.matmul(Q, K.transpose(-2, -1)) * sm_scale
+    S = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
     if is_causal:
-        causal_mask = torch.triu(torch.ones(seqlen, seqlen, device=Q.device, dtype=torch.bool), diagonal=1)
+        causal_mask = torch.triu(torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool), diagonal=1)
         S = S.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), float("-inf"))
 
     P = torch.exp(S - softmax_lse.unsqueeze(-1))
     # Step 1: Compute dV
-    dV = torch.matmul(P.transpose(-2, -1), dO)
+    dV = torch.matmul(P.transpose(-2, -1), dout)
     # Step 2: Compute dP
-    dP = torch.matmul(dO, V.transpose(-2, -1))
+    dP = torch.matmul(dout, v.transpose(-2, -1))
     # Step 3: Compute D
-    D = torch.sum(dO * O, dim=-1, keepdim=True)
+    D = torch.sum(dout * out, dim=-1, keepdim=True)
     # Step 4: Compute dS
     dS = P * (dP - D)
     # Apply causal mask to dS if is_causal is True
     if is_causal:
         dS = dS.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), 0)
     # Step 5: Compute dQ
-    dQ = torch.matmul(dS, K) * sm_scale
+    dQ = torch.matmul(dS, k) * sm_scale
     # Step 6: Compute dK
-    dK = torch.matmul(dS.transpose(-2, -1), Q) * sm_scale
+    dK = torch.matmul(dS.transpose(-2, -1), q) * sm_scale
     return dQ, dK, dV
 
 
 def update_out_and_lse(
-    out: Optional[torch.Tensor],
-    lse: Optional[torch.Tensor],
+    out: torch.Tensor | None,
+    lse: torch.Tensor | None,
     block_out: torch.Tensor,
     block_lse: torch.Tensor,
-    slice_: Optional[Any] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    slice_: Any | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
 
     def _update(current_out, current_lse):
         # new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))

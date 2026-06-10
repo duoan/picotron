@@ -1,13 +1,14 @@
+from functools import partial
+
+import numpy as np
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
-import numpy as np
-from functools import partial
 from datasets import Features, Sequence, Value, load_dataset
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer
-from picotron.utils import print
 
 import picotron.process_group_manager as pgm
+from picotron.utils import print
 
 
 class MicroBatchDataLoader(DataLoader):
@@ -139,5 +140,5 @@ class MicroBatchDataLoader(DataLoader):
                 batch = next(self._iterator)
             except StopIteration:
                 self._iterator = None
-                raise StopIteration
+                raise StopIteration  # noqa: B904
         return batch

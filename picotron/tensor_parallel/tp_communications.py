@@ -1,12 +1,11 @@
-import torch.distributed as dist
 import torch
-import picotron.process_group_manager as pgm
+import torch.distributed as dist
 import torch.nn.functional as F
 
-from typing import Tuple
+import picotron.process_group_manager as pgm
 
 
-def merge_first_two_dims(grad_output: torch.Tensor, input_: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def merge_first_two_dims(grad_output: torch.Tensor, input_: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Merge the first two dimensions of tensors."""
     return grad_output.contiguous().view(-1, *grad_output.shape[2:]), input_.contiguous().view(-1, *input_.shape[2:])
 

@@ -1,12 +1,13 @@
 import math
-from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 import picotron.process_group_manager as pgm
 from picotron.tensor_parallel.tp_communications import (
-    ReduceFromModelParallelRegion,
     GatherFromModelParallelRegion,
+    ReduceFromModelParallelRegion,
     linear_with_all_reduce,
     linear_with_async_all_reduce,
 )
@@ -14,7 +15,9 @@ from picotron.tensor_parallel.tp_communications import (
 
 def apply_tensor_parallel(model):
 
-    def _replace_module(_module, _linear_proj_name, _style, args={}):
+    def _replace_module(_module, _linear_proj_name, _style, args=None):
+        if args is None:
+            args = {}
         assert _style in ["column", "row", "vocab"]
         linear_layer = getattr(_module, _linear_proj_name)
 
@@ -78,7 +81,7 @@ class ColumnParallelLinear(torch.nn.Module):
         gather_output: bool = False,
         async_all_reduce: bool = False,
     ) -> None:
-        super(ColumnParallelLinear, self).__init__()
+        super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank
@@ -148,7 +151,7 @@ class RowParallelLinear(nn.Module):
     """
 
     def __init__(self, in_features: int, out_features: int, bias: bool):
-        super(RowParallelLinear, self).__init__()
+        super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank
@@ -199,13 +202,13 @@ class VocabParallelEmbedding(nn.Module):
         self,
         num_embeddings: int,
         embedding_dim: int,
-        padding_idx: Optional[int] = None,
-        max_norm: Optional[float] = None,
+        padding_idx: int | None = None,
+        max_norm: float | None = None,
         norm_type: float = 2.0,
         scale_grad_by_freq: bool = False,
         sparse: bool = False,
     ):
-        super(VocabParallelEmbedding, self).__init__()
+        super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank

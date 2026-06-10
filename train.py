@@ -3,40 +3,46 @@ CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 4 --master_addr localhos
 CUDA_DEVICE_MAX_CONNECTIONS=1 debugpy-run -p 5678 -m torch.distributed.run -- --nproc_per_node=4 --nnodes=1 --rdzv_backend=c10d --rdzv_endpoint=localhost:29400 train.py --config tmp/dummy/llama2_7b_benchmark.json
 """
 
-import os
+import argparse
+import datetime
 import inspect
 import json
+import os
 import time
-import datetime
-import argparse
+
+import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-import torch, torch.distributed as dist
+import wandb
 from torch.optim import AdamW
 from transformers import AutoConfig
-from picotron.context_parallel.context_parallel import apply_context_parallel
-from picotron.tensor_parallel.tensor_parallel import apply_tensor_parallel
+
 import picotron.process_group_manager as pgm
-from picotron.utils import (
-    average_loss_across_dp_cp_ranks,
-    set_all_seed,
-    print,
-    to_readable_format,
-    get_mfu,
-    get_num_params,
+from picotron.checkpoint import (
+    CheckpointManager,
+    init_model_with_dematerialized_weights,
+    init_model_with_materialized_weights,
 )
-from picotron.checkpoint import CheckpointManager
-from picotron.checkpoint import init_model_with_dematerialized_weights, init_model_with_materialized_weights
+from picotron.context_parallel.context_parallel import apply_context_parallel
 from picotron.data import MicroBatchDataLoader
-from picotron.process_group_manager import setup_process_group_manager
-from picotron.pipeline_parallel.pipeline_parallel import (
-    train_step_pipeline_1f1b,
-    train_step_pipeline_afab,
-    PipelineParallel,
-)
 from picotron.data_parallel.data_parallel import DataParallelBucket
 from picotron.model import Llama
-from picotron.utils import download_model
-import wandb
+from picotron.pipeline_parallel.pipeline_parallel import (
+    PipelineParallel,
+    train_step_pipeline_1f1b,
+    train_step_pipeline_afab,
+)
+from picotron.process_group_manager import setup_process_group_manager
+from picotron.tensor_parallel.tensor_parallel import apply_tensor_parallel
+from picotron.utils import (
+    average_loss_across_dp_cp_ranks,
+    download_model,
+    get_mfu,
+    get_num_params,
+    print,
+    set_all_seed,
+    to_readable_format,
+)
 
 
 def train_step(model, data_loader, device):
@@ -73,7 +79,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="", help="Path to config file")
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
+    with open(args.config) as f:
         config = json.load(f)
 
     os.environ["OMP_NUM_THREADS"] = config["environment"]["OMP_NUM_THREADS"]
@@ -124,7 +130,7 @@ if __name__ == "__main__":
         rank=global_rank,
         world_size=world_size,
         backend=backend,
-        init_method=f"env://",
+        init_method="env://",
         timeout=datetime.timedelta(minutes=3),
     )
     setup_process_group_manager(
@@ -193,21 +199,9 @@ if __name__ == "__main__":
         print(f"rank {pgm.process_group_manager.global_rank}: Creating model config")
         model_config = AutoConfig.from_pretrained(config["model"]["name"])
         # twist the model structure if specified in the config file
-        model_config.num_hidden_layers = (
-            model_config.num_hidden_layers
-            if "num_hidden_layers" not in config["model"]
-            else config["model"]["num_hidden_layers"]
-        )
-        model_config.num_attention_heads = (
-            model_config.num_attention_heads
-            if "num_attention_heads" not in config["model"]
-            else config["model"]["num_attention_heads"]
-        )
-        model_config.num_key_value_heads = (
-            model_config.num_key_value_heads
-            if "num_key_value_heads" not in config["model"]
-            else config["model"]["num_key_value_heads"]
-        )
+        model_config.num_hidden_layers = config["model"].get("num_hidden_layers", model_config.num_hidden_layers)
+        model_config.num_attention_heads = config["model"].get("num_attention_heads", model_config.num_attention_heads)
+        model_config.num_key_value_heads = config["model"].get("num_key_value_heads", model_config.num_key_value_heads)
         model_config.max_position_embeddings = config["training"]["seq_length"]
         objects = [model_config]
     else:
@@ -235,7 +229,7 @@ if __name__ == "__main__":
         if pgm.process_group_manager.pp_world_size > 1:
             model = PipelineParallel(model, model_config)
 
-    model = init_model_with_materialized_weights(model, model_config, save_dir=f"./hf_model_safetensors/")
+    model = init_model_with_materialized_weights(model, model_config, save_dir="./hf_model_safetensors/")
 
     # TODO: load existing checkpoint here to continue pre-training
 

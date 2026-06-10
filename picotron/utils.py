@@ -1,21 +1,22 @@
-import os
-import random
-import numpy as np
 import builtins
 import fcntl
 import glob
+import os
+import random
 
 import huggingface_hub
+import numpy as np
+import torch
+import torch.distributed as dist
 
 import picotron.process_group_manager as pgm
-import torch, torch.distributed as dist
 
 
 def print(*args, is_print_rank=True, **kwargs):
     """solves multi-process interleaved print problem"""
     if not is_print_rank:
         return
-    with open(__file__, "r") as fh:
+    with open(__file__) as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
             builtins.print(*args, **kwargs)
@@ -47,7 +48,12 @@ def to_readable_format(num, precision=2):
 # ref:
 # https://github.com/karpathy/nanoGPT/blob/9755682b981a45507f6eb9b11eadef8cb83cebd5/model.py#L289
 # https://github.com/stanford-cs336/spring2024-lectures/blob/main/lecture_02.py#L950
-def get_mfu(tokens_per_second, num_params, model_config, theoretical_flops=989.5 * 10**12):
+def get_mfu(
+    tokens_per_second,
+    num_params,
+    model_config,
+    theoretical_flops=989.5 * 10**12,
+):
     num_layers = model_config.num_hidden_layers
     hidden_dim = model_config.hidden_size
     seq_len = model_config.max_position_embeddings

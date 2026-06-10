@@ -1,18 +1,20 @@
-import os
 import math
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from picotron.context_parallel import context_parallel
 from flash_attn.flash_attn_interface import flash_attn_func
 from flash_attn.layers.rotary import apply_rotary_emb
 from flash_attn.ops.triton.layer_norm import layer_norm_fn
+
 import picotron.process_group_manager as pgm
+from picotron.context_parallel import context_parallel
 
 
 def apply_rotary_pos_emb(x, cos, sin):
     # TODO: Maybe do class RotaryEmbedding(nn.Module) later
-    batch_size, num_head, seq_length, head_dim = x.size()
+    _, _, _, head_dim = x.size()
     x1 = x[..., : head_dim // 2]
     x2 = x[..., head_dim // 2 :]
     rotate_half = torch.cat([-x2, x1], dim=-1)
@@ -47,7 +49,7 @@ class TritonRMSNorm(nn.Module):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.empty(hidden_size))
+        self.weight = nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
         self.register_parameter("bias", None)
         self.reset_parameters()
 
@@ -140,7 +142,7 @@ class Attention(nn.Module):
         _init_weights(self.out_proj.weight)
 
     def forward(self, x, cos, sin, attention_mask=None, position_ids=None):
-        batch_size, seq_length, hidden_dim = x.size()
+        batch_size, seq_length, _ = x.size()
         q = self.q_proj(x)  # [batch_size, seq_length, num_heads*head_dim]
         k = self.k_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
         v = self.v_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
@@ -182,7 +184,7 @@ class Attention(nn.Module):
             self.num_local_heads // self.num_local_kv_heads, dim=1
         )  # [batch_size, num_heads, seq_length, head_dim]
 
-        causal = True if q.size(2) == k.size(2) else False  # During decoding phase. The lenghth of q is usually 1.
+        causal = q.size(2) == k.size(2)  # During decoding phase. The lenghth of q is usually 1.
 
         # TODO: replace everything with flex attention
         if os.getenv("CONTEXT_PARALLEL", "0") == "1":

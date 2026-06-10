@@ -1,8 +1,9 @@
-import re
+import argparse
 import csv
 import glob
 import os
-import argparse
+import re
+
 import numpy as np
 
 
@@ -69,7 +70,7 @@ def parse_log_line(line):
 def process_file(filepath):
     tokens_s_gpu_values = []
     mfu_values = []
-    with open(filepath, "r") as f:
+    with open(filepath) as f:
         for line in f:
             if re.search(r"\[default\d+\]:\[rank \d+\]", line):
                 mfu_value, tokens_s_gpu_value = parse_log_line(line)
@@ -82,8 +83,8 @@ def process_file(filepath):
     if len(tokens_s_gpu_values) < 3 and len(mfu_values) < 3:
         print(f"Warning: Not enough data points for {filepath}")
         return None, None
-    tokens_s_gpu = int(round(np.mean(tokens_s_gpu_values[3:]))) if tokens_s_gpu_values else None
-    mfu = int(round(np.mean(mfu_values[3:]))) if mfu_values else None
+    tokens_s_gpu = round(np.mean(tokens_s_gpu_values[3:])) if tokens_s_gpu_values else None
+    mfu = round(np.mean(mfu_values[3:])) if mfu_values else None
 
     return mfu, tokens_s_gpu
 
@@ -112,9 +113,9 @@ def write_csv(data, output_filepath):
 
 def read_status(status_file):
     try:
-        with open(status_file, "r") as f:
+        with open(status_file) as f:
             return f.read().strip()
-    except:
+    except OSError:
         return None
 
 
@@ -182,12 +183,12 @@ def aggregate_metrics(input_folder):
             # If metrics.csv exists, read the avg_tokens_s_gpu from it
             if os.path.exists(metrics_file):
                 try:
-                    with open(metrics_file, "r") as f:
+                    with open(metrics_file) as f:
                         reader = csv.DictReader(f)
                         metrics_data = next(reader)
                         data["avg_tokens_s_gpu"] = int(metrics_data["avg_tokens_s_gpu"])
                         data["avg_mfu"] = int(metrics_data["avg_mfu"])
-                except:
+                except (OSError, ValueError, KeyError, StopIteration):
                     data["avg_tokens_s_gpu"] = -1
                     data["avg_mfu"] = -1
             else:

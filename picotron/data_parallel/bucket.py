@@ -1,12 +1,13 @@
-from typing import List
 import torch
 import torch.distributed as dist
-from torch import nn
 
 
 class Bucket:
     def __init__(
-        self, params: List[torch.nn.Parameter], grad_data: torch.Tensor, process_group: torch.distributed.ProcessGroup
+        self,
+        params: list[torch.nn.Parameter],
+        grad_data: torch.Tensor,
+        process_group: dist.ProcessGroup,
     ) -> None:
         """
         Initializes a Bucket instance.
@@ -63,8 +64,8 @@ class Bucket:
 class BucketManager:
     def __init__(
         self,
-        params: List[torch.nn.Parameter],
-        process_group: torch.distributed.ProcessGroup,
+        params: list[torch.nn.Parameter],
+        process_group: dist.ProcessGroup,
         bucket_size: int,
         grad_type: torch.dtype = torch.float32,
     ) -> None:
@@ -77,10 +78,10 @@ class BucketManager:
             bucket_size (int): Maximum size of each bucket in terms of gradient elements.
             grad_type (torch.dtype, optional): Data type of gradients, defaults to torch.float32.
         """
-        self.params = list(params)  # Convert parameter generator to a list.
-        self.device = self.params[0].device if self.params[0].is_cuda else torch.device("cpu")
+        self.params: list[torch.nn.Parameter] = list(params)  # Convert parameter generator to a list.
+        self.device: torch.device = self.params[0].device if self.params[0].is_cuda else torch.device("cpu")
         self.buckets = []  # List of buckets.
-        self.process_group = process_group
+        self.process_group: dist.ProcessGroup = process_group
         self.process_group_size = dist.get_world_size(group=self.process_group)
         self.params_to_bucket_location = {}  # Map each parameter to its corresponding bucket/place (start, end, bucket_idx).
         self.bucket_size = bucket_size
@@ -143,7 +144,13 @@ class BucketManager:
                 self.grad_data_list[bucket_id], param.shape, data_start_index, data_end_index
             )
 
-    def _get_view_from_tensor(self, tensor: torch.Tensor, shape: torch.Size, start: int, end: int) -> torch.Tensor:
+    def _get_view_from_tensor(
+        self,
+        tensor: torch.Tensor,
+        shape: torch.Size,
+        start: int,
+        end: int,
+    ) -> torch.Tensor:
         """
         Create a view of the given tensor with the specified shape from start to end indices.
         """

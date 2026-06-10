@@ -1,17 +1,17 @@
+import contextlib
+import json
 import os
 import re
-import json
+
 import torch
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 from safetensors import safe_open
-import contextlib
 
-from picotron.model import FinalProjection
-from picotron.utils import assert_no_meta_tensors, print
 import picotron.process_group_manager as pgm
-
+from picotron.model import FinalProjection
 from picotron.pipeline_parallel.pipeline_parallel import PipelineParallel
+from picotron.utils import assert_no_meta_tensors, print
 
 
 @contextlib.contextmanager
@@ -65,7 +65,7 @@ def init_model_with_materialized_weights(model, model_config, save_dir):
     index_path = os.path.join(save_dir, "model.safetensors.index.json")
 
     if os.path.exists(index_path):  # Handle sharded checkpoint
-        with open(index_path, "r") as f:
+        with open(index_path) as f:
             index = json.load(f)
 
         for sft_name in layer_names:
@@ -219,11 +219,10 @@ class InitializationManager:
                     start_idx = tp_rank * intermediate_size_per_rank
                     end_idx = start_idx + intermediate_size_per_rank
                     tensor = tensor[start_idx:end_idx, :]
-            elif "down_proj.weight" in name:
-                if tensor.shape[1] != intermediate_size_per_rank:
-                    start_idx = tp_rank * intermediate_size_per_rank
-                    end_idx = start_idx + intermediate_size_per_rank
-                    tensor = tensor[:, start_idx:end_idx]
+            elif "down_proj.weight" in name and tensor.shape[1] != intermediate_size_per_rank:
+                start_idx = tp_rank * intermediate_size_per_rank
+                end_idx = start_idx + intermediate_size_per_rank
+                tensor = tensor[:, start_idx:end_idx]
 
         return tensor
 

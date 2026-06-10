@@ -2,13 +2,14 @@
 python create_config.py --out_dir tmp --exp_name test_2_node --tp 2 --cp 2 --pp 2 --dp 2 --model_name HuggingFaceTB/SmolLM-360M-Instruct --num_attention_heads 16 --num_key_value_heads 4 --grad_acc_steps 1 --mbs 32 --seq_len 4096 --use_wandb
 """
 
-import os
-from copy import deepcopy
-from transformers import AutoConfig
-import shutil
 import argparse
 import json
-from typing import Optional
+import os
+import shutil
+from copy import deepcopy
+
+from transformers import AutoConfig
+
 from picotron.utils import download_model
 
 
@@ -20,25 +21,25 @@ def create_single_config(
     pp: int,
     pp_engine: str,
     model_name: str,
-    num_hidden_layers: Optional[int],
-    num_attention_heads: Optional[int],
-    num_key_value_heads: Optional[int],
+    num_hidden_layers: int | None,
+    num_attention_heads: int | None,
+    num_key_value_heads: int | None,
     grad_acc_steps: int,
     mbs: int,
     seq_len: int,
-    subset_name: Optional[str],
+    subset_name: str | None,
     exp_name: str,
     use_wandb: bool = False,
     use_cpu: bool = False,
     use_fused_adam: bool = False,
-    hf_token: str = None,
+    hf_token: str | None = None,
 ):
     run_path = os.path.join(out_dir, exp_name)
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    with open("template/base_config.json", "r") as f:
+    with open("template/base_config.json") as f:
         base_config = json.load(f)
 
     config_content = deepcopy(base_config)

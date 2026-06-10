@@ -2,20 +2,20 @@
 torchrun --nproc_per_node 2 --master_addr localhost --master_port 25500 test_dataloader.py
 """
 
-from picotron.data import MicroBatchDataLoader
-import torch.distributed as dist
-import os
 import datetime
-from picotron.process_group_manager import setup_process_group_manager
-
-import torch
-from torch.utils.data import DataLoader, DistributedSampler
-import numpy as np
+import os
 from functools import partial
+
+import numpy as np
+import torch
+import torch.distributed as dist
 from datasets import Features, Sequence, Value, load_dataset
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer
 
 import picotron.process_group_manager as pgm
+from picotron.data import MicroBatchDataLoader
+from picotron.process_group_manager import setup_process_group_manager
 
 
 # remove context parallelism split. as a reference
@@ -131,7 +131,7 @@ class DummyDataLoader(DataLoader):
                 batch = next(self._iterator)
             except StopIteration:
                 self._iterator = None
-                raise StopIteration
+                raise StopIteration  # noqa: B904
         return batch
 
 
@@ -178,7 +178,7 @@ def test_cp_behavior(TP_SIZE, CP_SIZE, PP_SIZE, DP_SIZE, SEQ_LEN=8):
         pin_memory=False,
     )
 
-    for i in range(1):
+    for _ in range(1):
         ref_batch = next(ref_data_loader)
         batch = next(data_loader)
         split_size = ref_batch["input_ids"].shape[1] // pgm.process_group_manager.cp_world_size

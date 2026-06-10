@@ -1,7 +1,7 @@
 import os
+
 import torch
 from torch import distributed as dist
-from typing import List
 
 import picotron.process_group_manager as pgm
 
@@ -12,7 +12,7 @@ class ContextCommunicate:
     def __init__(self, msg: str = ""):
         global STEP
         global VERBOSE
-        self._pending_operations: List[dist.P2POp] = []
+        self._pending_operations: list[dist.P2POp] = []
         self._active_requests = None
         self.rank = pgm.process_group_manager.cp_rank
         self.world_size = pgm.process_group_manager.cp_world_size
@@ -27,10 +27,7 @@ class ContextCommunicate:
             )
 
     def send_recv(self, tensor_to_send, recv_tensor=None):
-        if recv_tensor is None:
-            result_tensor = torch.zeros_like(tensor_to_send)
-        else:
-            result_tensor = recv_tensor
+        result_tensor = torch.zeros_like(tensor_to_send) if recv_tensor is None else recv_tensor
 
         send_operation = dist.P2POp(
             dist.isend, tensor_to_send, self.send_rank, group=pgm.process_group_manager.cp_group

@@ -1,10 +1,17 @@
 import os
+
 import torch
 import torch.distributed as dist
 
 
 class ProcessGroupManager:
-    def __init__(self, tp_size, cp_size, pp_size, dp_size):
+    def __init__(
+        self,
+        tp_size: int,
+        cp_size: int,
+        pp_size: int,
+        dp_size: int,
+    ):
         self.global_rank = dist.get_rank()
         self.world_size = dist.get_world_size()
         self.local_rank = int(os.environ.get("LOCAL_RANK", self.global_rank % self.world_size))
