@@ -80,14 +80,16 @@ class BucketManager:
         """
         self.params: list[torch.nn.Parameter] = list(params)  # Convert parameter generator to a list.
         self.device: torch.device = self.params[0].device if self.params[0].is_cuda else torch.device("cpu")
-        self.buckets = []  # List of buckets.
+        self.buckets: list[Bucket] = []  # List of buckets.
         self.process_group: dist.ProcessGroup = process_group
-        self.process_group_size = dist.get_world_size(group=self.process_group)
-        self.params_to_bucket_location = {}  # Map each parameter to its corresponding bucket/place (start, end, bucket_idx).
-        self.bucket_size = bucket_size
-        self.bucket_sizes = None  # Actual sizes of each bucket.
-        self.grad_data_list = []  # List of tensors to store gradients, one tensor per bucket.
-        self.grad_type = grad_type
+        self.process_group_size: int = dist.get_world_size(group=self.process_group)
+        self.params_to_bucket_location: dict[
+            torch.nn.Parameter, tuple[int, int, int]
+        ] = {}  # Map each parameter to its corresponding bucket/place (start, end, bucket_idx).
+        self.bucket_size: int = bucket_size
+        self.bucket_sizes: list[int] = None  # Actual sizes of each bucket.
+        self.grad_data_list: list[torch.Tensor] = []  # List of tensors to store gradients, one tensor per bucket.
+        self.grad_type: torch.dtype = grad_type
         # Divide gradients into buckets based on the provided bucket size.
         self._initialize_buckets()
 
