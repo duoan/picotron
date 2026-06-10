@@ -7,21 +7,23 @@ from typing import Any, Optional, Tuple
 import picotron.process_group_manager as pgm
 from picotron.context_parallel.cp_communications import ContextCommunicate
 
+
 def apply_context_parallel(model):
     os.environ["CONTEXT_PARALLEL"] = "1" if pgm.process_group_manager.cp_world_size > 1 else "0"
     return model
 
+
 def ring_attention(q, k, v, sm_scale, is_causal):
     return RingAttentionFunc.apply(q, k, v, sm_scale, is_causal)
 
-class RingAttentionFunc(torch.autograd.Function):
 
+class RingAttentionFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, sm_scale, is_causal):
         comm = ContextCommunicate("comm")
-        #TODO(fmom): add flex attention
-        #TODO(fmom): add flash attention
-        #TODO(fmom): Find a better to save these tensors without cloning
+        # TODO(fmom): add flex attention
+        # TODO(fmom): add flash attention
+        # TODO(fmom): Find a better to save these tensors without cloning
         k_og = k.clone()
         v_og = v.clone()
         out, lse = None, None
@@ -34,11 +36,9 @@ class RingAttentionFunc(torch.autograd.Function):
                 comm.commit()
 
             if not is_causal or step <= comm.rank:
-                block_out, block_lse  = ring_attention_forward(
-                    q, k, v, sm_scale, is_causal and step == 0
-                )
+                block_out, block_lse = ring_attention_forward(q, k, v, sm_scale, is_causal and step == 0)
                 out, lse = update_out_and_lse(out, lse, block_out, block_lse)
-                
+
             if step + 1 != comm.world_size:
                 comm.wait()
                 k = next_k
@@ -61,7 +61,7 @@ class RingAttentionFunc(torch.autograd.Function):
         d_kv_comm = ContextCommunicate("d_kv_comm")
         dq, dk, dv = None, None, None
         next_dk, next_dv = None, None
-        
+
         block_dq_buffer = torch.empty(q.shape, dtype=q.dtype, device=q.device)
         block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
         block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
@@ -109,6 +109,7 @@ class RingAttentionFunc(torch.autograd.Function):
 
         return dq, next_dk, next_dv, None, None
 
+
 def ring_attention_forward(q, k, v, sm_scale, is_causal):
     batch_size, nheads, seqlen, d = q.shape
     S = torch.matmul(q, k.transpose(-2, -1)) * sm_scale
@@ -116,7 +117,7 @@ def ring_attention_forward(q, k, v, sm_scale, is_causal):
     if is_causal:
         causal_mask = torch.triu(torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool), diagonal=1)
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, nheads, seqlen, seqlen)
-        S.masked_fill_(causal_mask, float('-inf'))
+        S.masked_fill_(causal_mask, float("-inf"))
 
     # Online softmax
     S_max = torch.max(S, dim=-1, keepdim=True)[0]
@@ -127,14 +128,15 @@ def ring_attention_forward(q, k, v, sm_scale, is_causal):
     O = torch.matmul(P, v)
     return O, log_sum_exp.squeeze(-1)
 
+
 def ring_attention_backward(dO, Q, K, V, O, softmax_lse, sm_scale, is_causal):
     batch_size, nheads, seqlen, d = Q.shape
-    
+
     # Recreate S and P from log_sum_exp
     S = torch.matmul(Q, K.transpose(-2, -1)) * sm_scale
     if is_causal:
         causal_mask = torch.triu(torch.ones(seqlen, seqlen, device=Q.device, dtype=torch.bool), diagonal=1)
-        S = S.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), float('-inf'))
+        S = S.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), float("-inf"))
 
     P = torch.exp(S - softmax_lse.unsqueeze(-1))
     # Step 1: Compute dV
@@ -154,14 +156,15 @@ def ring_attention_backward(dO, Q, K, V, O, softmax_lse, sm_scale, is_causal):
     dK = torch.matmul(dS.transpose(-2, -1), Q) * sm_scale
     return dQ, dK, dV
 
+
 def update_out_and_lse(
     out: Optional[torch.Tensor],
     lse: Optional[torch.Tensor],
     block_out: torch.Tensor,
     block_lse: torch.Tensor,
-    slice_: Optional[Any] = None
+    slice_: Optional[Any] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    
+
     def _update(current_out, current_lse):
         # new_lse = lse + torch.log(1 + torch.exp(block_lse - lse))
         # out = torch.exp(lse - new_lse) * out + torch.exp(block_lse - new_lse) * block_out
@@ -170,7 +173,7 @@ def update_out_and_lse(
         current_out = current_out - F.sigmoid(block_lse - current_lse) * (current_out - block_out)
         current_lse = current_lse - F.logsigmoid(current_lse - block_lse)
         return current_out, current_lse
-    
+
     block_out = block_out.to(torch.float32)
     block_lse = block_lse.unsqueeze(dim=-1)
 
@@ -183,13 +186,16 @@ def update_out_and_lse(
         out[slice_], lse[slice_] = _update(out[slice_], lse[slice_])
     else:
         out, lse = _update(out, lse)
-        
+
     return out, lse
+
 
 def update_rope_for_context_parallel(cos, sin):
     seq_len, _ = cos.size()
     cp_rank, cp_word_size = pgm.process_group_manager.cp_rank, pgm.process_group_manager.cp_world_size
-    assert seq_len % cp_word_size == 0, f"Input sequence length ({seq_len}) must be divisible by cp_world_size ({cp_word_size})"
+    assert seq_len % cp_word_size == 0, (
+        f"Input sequence length ({seq_len}) must be divisible by cp_world_size ({cp_word_size})"
+    )
     size_per_partition = seq_len // cp_word_size
     start_idx, end_idx = cp_rank * size_per_partition, (cp_rank + 1) * size_per_partition
     return cos[start_idx:end_idx], sin[start_idx:end_idx]

@@ -4,20 +4,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import picotron.process_group_manager as pgm
-from picotron.tensor_parallel.tp_communications import ReduceFromModelParallelRegion, GatherFromModelParallelRegion, linear_with_all_reduce, linear_with_async_all_reduce
+from picotron.tensor_parallel.tp_communications import (
+    ReduceFromModelParallelRegion,
+    GatherFromModelParallelRegion,
+    linear_with_all_reduce,
+    linear_with_async_all_reduce,
+)
+
 
 def apply_tensor_parallel(model):
 
     def _replace_module(_module, _linear_proj_name, _style, args={}):
-        assert _style in ["column", "row", 'vocab']
+        assert _style in ["column", "row", "vocab"]
         linear_layer = getattr(_module, _linear_proj_name)
-        
+
         if _style == "column":
             new_linear_layer = ColumnParallelLinear(
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
-                gather_output=args.get("gather_output", False)
+                gather_output=args.get("gather_output", False),
             )
         elif _style == "row":
             new_linear_layer = RowParallelLinear(
@@ -45,11 +51,12 @@ def apply_tensor_parallel(model):
     for layer in model.decoder_layers:
         for module_name, linear_proj_name, style in module_linear_name_stype_mapping_list:
             _replace_module(getattr(layer, module_name), linear_proj_name, style)
-            
+
     _replace_module(model, "embedding", "vocab")
     _replace_module(model, "final_proj", "column", args={"gather_output": True})
-    
+
     return model
+
 
 class ColumnParallelLinear(torch.nn.Module):
     """Column Parallel Linear layer
@@ -74,17 +81,19 @@ class ColumnParallelLinear(torch.nn.Module):
         super(ColumnParallelLinear, self).__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
-        self.tp_rank = pgm.process_group_manager.tp_rank 
+        self.tp_rank = pgm.process_group_manager.tp_rank
 
         self.in_features = in_features
         self.out_features = out_features
-        assert out_features % self.tp_world_size == 0, "Hidden dimension must be divisible by the tensor parallel world size"
+        assert out_features % self.tp_world_size == 0, (
+            "Hidden dimension must be divisible by the tensor parallel world size"
+        )
         self.output_size_per_partition = out_features // self.tp_world_size
         self.gather_output = gather_output
         self.async_all_reduce = async_all_reduce
         # Allocate space for the weight and bias
         # Note: torch.nn.functional.linear performs XW^T + b so we exchange the order of dimensions
-        self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features)) # W_i
+        self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features))  # W_i
         if bias:
             self.bias = nn.Parameter(torch.Tensor(self.output_size_per_partition))
             with torch.no_grad():
@@ -97,31 +106,28 @@ class ColumnParallelLinear(torch.nn.Module):
     def reset_parameters(self):
         # Initialize weight tensor with the default initialization method used for nn.Linear in PyTorch
         master_weight = torch.empty(
-            self.out_features, 
-            self.in_features, 
-            dtype=self.weight.dtype,
-            device=self.weight.device,
-            requires_grad=False
+            self.out_features, self.in_features, dtype=self.weight.dtype, device=self.weight.device, requires_grad=False
         )
-        
+
         # Calculate bound based on master weight's input dimension
         k = 1 / master_weight.size(1)
         bound = math.sqrt(k)
         torch.nn.init.uniform_(master_weight, -bound, bound)
-        
+
         # Split the model into size of self.output_size_per_partition
         weight_list = torch.split(master_weight, self.output_size_per_partition, dim=0)
         self.weight.data = weight_list[self.tp_rank].contiguous()
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.async_all_reduce:
-            output = linear_with_async_all_reduce(x, self.weight, self.bias) 
+            output = linear_with_async_all_reduce(x, self.weight, self.bias)
         else:
-            output = linear_with_all_reduce(x, self.weight, self.bias) 
+            output = linear_with_all_reduce(x, self.weight, self.bias)
         if self.gather_output:
             output = GatherFromModelParallelRegion.apply(output)
         return output
-    
+
+
 class RowParallelLinear(nn.Module):
     """Linear layer with row parallelism.
     Y = XW + b. W is parallelized along its first dimension and X along its second dimension as:
@@ -140,15 +146,18 @@ class RowParallelLinear(nn.Module):
         bias: If true, add bias
         init_method: method to initialize weights.
     """
+
     def __init__(self, in_features: int, out_features: int, bias: bool):
         super(RowParallelLinear, self).__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
-        self.tp_rank = pgm.process_group_manager.tp_rank 
+        self.tp_rank = pgm.process_group_manager.tp_rank
 
         self.in_features = in_features
         self.out_features = out_features
-        assert in_features % self.tp_world_size == 0, "Hidden dimension must be divisible by the tensor parallel world size"
+        assert in_features % self.tp_world_size == 0, (
+            "Hidden dimension must be divisible by the tensor parallel world size"
+        )
         self.input_size_per_partition = in_features // self.tp_world_size
 
         self.weight = nn.Parameter(torch.Tensor(self.out_features, self.input_size_per_partition))
@@ -165,18 +174,14 @@ class RowParallelLinear(nn.Module):
     def reset_parameters(self):
         # Initialize weight tensor with same dtype and device as self.weight
         master_weight = torch.empty(
-            self.out_features, 
-            self.in_features, 
-            dtype=self.weight.dtype,
-            device=self.weight.device,
-            requires_grad=False
+            self.out_features, self.in_features, dtype=self.weight.dtype, device=self.weight.device, requires_grad=False
         )
-        
+
         # Calculate bound based on master weight's input dimension
         k = 1 / master_weight.size(1)
-        bound = math.sqrt(k)    
+        bound = math.sqrt(k)
         torch.nn.init.uniform_(master_weight, -bound, bound)
-        
+
         # Split the model into size of self.input_size_per_partition
         weight_list = torch.split(master_weight, self.input_size_per_partition, dim=1)
         self.weight.data = weight_list[self.tp_rank].contiguous()
@@ -188,6 +193,7 @@ class RowParallelLinear(nn.Module):
         output = ReduceFromModelParallelRegion.apply(output_parallel)
         return output if self.bias is None else output + self.bias
 
+
 class VocabParallelEmbedding(nn.Module):
     def __init__(
         self,
@@ -197,7 +203,7 @@ class VocabParallelEmbedding(nn.Module):
         max_norm: Optional[float] = None,
         norm_type: float = 2.0,
         scale_grad_by_freq: bool = False,
-        sparse: bool = False
+        sparse: bool = False,
     ):
         super(VocabParallelEmbedding, self).__init__()
 
@@ -220,9 +226,9 @@ class VocabParallelEmbedding(nn.Module):
         self.weight = nn.Parameter(torch.Tensor(self.num_embeddings_per_partition, self.embedding_dim))
 
         self.reset_parameters()
-    
+
     def _vocab_range_from_global_vocab_size(self, global_vocab_size: int, rank: int, world_size: int):
-        #TODO: do some padding for the vocab size
+        # TODO: do some padding for the vocab size
         assert global_vocab_size % world_size == 0, f"{global_vocab_size} is not divisible by {world_size}"
         per_partition_vocab_size = global_vocab_size // world_size
         # vocab_range_from_per_partition_vocab_size
@@ -232,11 +238,11 @@ class VocabParallelEmbedding(nn.Module):
 
     def reset_parameters(self):
         master_weight = torch.empty(
-            self.num_embeddings, 
-            self.embedding_dim, 
+            self.num_embeddings,
+            self.embedding_dim,
             dtype=self.weight.dtype,
-            device=self.weight.device, 
-            requires_grad=False
+            device=self.weight.device,
+            requires_grad=False,
         )
         torch.nn.init.normal_(master_weight, mean=0.0, std=1.0)
         # Split the model into size of self.num_embeddings_per_partition

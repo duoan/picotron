@@ -1,6 +1,7 @@
 __pycache__
 *.pth
 .vscode/
+!.vscode/settings.json
 picotron.egg-info
 *.ipynb
 wandb

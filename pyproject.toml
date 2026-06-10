@@ -32,6 +32,14 @@ build-backend = "setuptools.build_meta"
 include = ["picotron*"]
 namespaces = true
 
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
 [tool.uv.extra-build-dependencies]
 # flash-attn does not declare its build deps; torch/numpy must be present at build time.
 flash-attn = [
@@ -42,3 +50,36 @@ flash-attn = [
     "packaging",
     "wheel",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["picotron", "tests"]
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501", # line length handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["picotron"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false

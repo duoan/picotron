@@ -13,12 +13,13 @@ import picotron.process_group_manager as pgm
 
 from picotron.pipeline_parallel.pipeline_parallel import PipelineParallel
 
+
 @contextlib.contextmanager
 def init_model_with_dematerialized_weights(include_buffers: bool = False):
     """
     From Accelerate library: https://github.com/huggingface/accelerate/blob/v0.11.0/src/accelerate/big_modeling.py#L254
     Context manager that initializes models with empty weights (no memory allocation).
-    
+
     Args:
         include_buffers (bool): Whether to also skip buffer initialization.
     """
@@ -48,13 +49,14 @@ def init_model_with_dematerialized_weights(include_buffers: bool = False):
         if include_buffers:
             nn.Module.register_buffer = old_register_buffer
 
+
 def init_model_with_materialized_weights(model, model_config, save_dir):
-    #Initialize model with correct tensor shapes but random weights
+    # Initialize model with correct tensor shapes but random weights
     initialization_manager = InitializationManager(model, model_config)
     layer_names = initialization_manager.get_layer_names_in_sft_format()
 
     # print(f"Rank {pgm.process_group_manager.global_rank} responsible for {len(layer_names)} layers")
-    
+
     if len(layer_names) == 0:
         raise Exception("Some ranks has no layers. There are too many ranks and not enough layers to distribute.")
 
@@ -62,24 +64,26 @@ def init_model_with_materialized_weights(model, model_config, save_dir):
 
     index_path = os.path.join(save_dir, "model.safetensors.index.json")
 
-    if os.path.exists(index_path): # Handle sharded checkpoint
-        with open(index_path, 'r') as f:
+    if os.path.exists(index_path):  # Handle sharded checkpoint
+        with open(index_path, "r") as f:
             index = json.load(f)
-        
+
         for sft_name in layer_names:
-            shard_path = os.path.join(save_dir, index['weight_map'][sft_name])
+            shard_path = os.path.join(save_dir, index["weight_map"][sft_name])
             with safe_open(shard_path, framework="pytorch", device="cpu") as f:
                 hf_name = initialization_manager.convert_safetensors_to_hf_name(sft_name)
                 tensor = f.get_tensor(sft_name)
                 tensor = initialization_manager.adjust_tensor_size(tensor, hf_name)
                 state_dict[hf_name] = tensor
 
-    else: # Handle single file checkpoint
+    else:  # Handle single file checkpoint
         safetensors_path = os.path.join(save_dir, "model.safetensors")
         with safe_open(safetensors_path, framework="pytorch", device="cpu") as f:
             if len(f.keys()) > len(layer_names):
-                print(f"rank {pgm.process_group_manager.global_rank}: Warning: Checkpoint has {len(f.keys())} layers but model only has {len(layer_names)} layers.")
-            
+                print(
+                    f"rank {pgm.process_group_manager.global_rank}: Warning: Checkpoint has {len(f.keys())} layers but model only has {len(layer_names)} layers."
+                )
+
             for sft_name in layer_names:
                 hf_name = initialization_manager.convert_safetensors_to_hf_name(sft_name)
                 tensor = f.get_tensor(sft_name)
@@ -94,12 +98,12 @@ def init_model_with_materialized_weights(model, model_config, save_dir):
             # Just need to initialize state_dict with correct sharded size
             vocab_per_rank = vocab_size // pgm.process_group_manager.tp_world_size
             # Note: For ColumnParallelLinear, weight shape should be (output_size_per_partition, in_features)
-            state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank, model_config.hidden_size)
+            state_dict["final_proj.weight"] = torch.zeros(vocab_per_rank, model_config.hidden_size)
         else:
             # For TP=1, create the full layer. FinalProjection expects weight shape (out_features, in_features)
             # FinalProjection is needed so that we cann call .reset_parameters() on it
             model.final_proj = FinalProjection(model_config.hidden_size, vocab_size, bias=False)
-            state_dict['final_proj.weight'] = torch.zeros(vocab_size, model_config.hidden_size)
+            state_dict["final_proj.weight"] = torch.zeros(vocab_size, model_config.hidden_size)
 
     # Synchronize across distributed processes and load weights
     dist.barrier()
@@ -111,6 +115,7 @@ def init_model_with_materialized_weights(model, model_config, save_dir):
     initialization_manager.init_model_parameters()
     dist.barrier()
     return model
+
 
 class InitializationManager:
     def __init__(self, model, model_config):
@@ -133,18 +138,18 @@ class InitializationManager:
             "self_attn.q_proj",
             "self_attn.v_proj",
         ]
-        
+
         # Generate base layer names
         layer_names = []
         if isinstance(self.model, PipelineParallel):
             base_names = [f"model.layers.{id}" for id in self.model.layer_distribution]
         else:
             base_names = [f"model.layers.{id}" for id in range(self.model_config.num_hidden_layers)]
-        
+
         for layer in base_names:
             for component in decoder_components:
                 layer_names.append(f"{layer}.{component}.weight")
-       
+
         # Add special layers based on pipeline stage or non-PP case
         # NOTE: Safetensors may have tied embeddings, but Picotron does not support it. We always create a new lm_head.
         if isinstance(self.model, PipelineParallel):
@@ -163,9 +168,9 @@ class InitializationManager:
         tp_rank = pgm.process_group_manager.tp_rank
         tp_size = pgm.process_group_manager.tp_world_size
         hidden_size = self.model_config.hidden_size
-        
+
         # Handle embedding and final projection layers
-        if 'embedding.weight' in name or 'final_proj.weight' in name:
+        if "embedding.weight" in name or "final_proj.weight" in name:
             vocab_size = self.model_config.vocab_size
             vocab_per_rank = vocab_size // tp_size
             if tensor.shape[0] != vocab_per_rank:
@@ -175,50 +180,51 @@ class InitializationManager:
             return tensor
 
         # Handle attention layers
-        if 'attention' in name:
+        if "attention" in name:
             head_dim = hidden_size // self.model_config.num_attention_heads
-            
-            if 'q_proj.weight' in name:
+
+            if "q_proj.weight" in name:
                 total_heads = self.model_config.num_attention_heads
                 heads_per_rank = total_heads // tp_size
                 target_dim = heads_per_rank * head_dim
-            elif 'k_proj.weight' in name or 'v_proj.weight' in name:
+            elif "k_proj.weight" in name or "v_proj.weight" in name:
                 total_heads = self.model_config.num_key_value_heads
                 heads_per_rank = total_heads // tp_size
                 target_dim = heads_per_rank * head_dim
-            elif 'out_proj.weight' in name:
+            elif "out_proj.weight" in name:
                 # For out_proj, we split along the second dimension
                 target_dim = tensor.shape[0]  # First dimension stays the same
                 if tensor.shape[1] != hidden_size // tp_size:
-                    tensor = tensor[:, (hidden_size // tp_size) * tp_rank:(hidden_size // tp_size) * (tp_rank + 1)]
+                    tensor = tensor[:, (hidden_size // tp_size) * tp_rank : (hidden_size // tp_size) * (tp_rank + 1)]
                 return tensor
             else:
                 return tensor
-                
+
             if tensor.shape[0] != target_dim:
                 if target_dim > tensor.shape[0]:
-                    pad_tensor = torch.empty(target_dim - tensor.shape[0], tensor.shape[1], 
-                                        dtype=tensor.dtype, device=tensor.device)
+                    pad_tensor = torch.empty(
+                        target_dim - tensor.shape[0], tensor.shape[1], dtype=tensor.dtype, device=tensor.device
+                    )
                     tensor = torch.cat([tensor, pad_tensor], dim=0)
                 else:
                     tensor = tensor[:target_dim, :]
 
         # Handle MLP layers
-        elif 'mlp' in name:
+        elif "mlp" in name:
             intermediate_size = self.model_config.intermediate_size
             intermediate_size_per_rank = intermediate_size // tp_size
-            
-            if 'up_proj.weight' in name or 'gate_proj.weight' in name:
+
+            if "up_proj.weight" in name or "gate_proj.weight" in name:
                 if tensor.shape[0] != intermediate_size_per_rank:
                     start_idx = tp_rank * intermediate_size_per_rank
                     end_idx = start_idx + intermediate_size_per_rank
                     tensor = tensor[start_idx:end_idx, :]
-            elif 'down_proj.weight' in name:
+            elif "down_proj.weight" in name:
                 if tensor.shape[1] != intermediate_size_per_rank:
                     start_idx = tp_rank * intermediate_size_per_rank
                     end_idx = start_idx + intermediate_size_per_rank
                     tensor = tensor[:, start_idx:end_idx]
-                    
+
         return tensor
 
     def convert_safetensors_to_hf_name(self, sft_name):
@@ -232,13 +238,14 @@ class InitializationManager:
             "lm_head": "final_proj",
             "input_layernorm": "input_layernorm",
             "post_attention_layernorm": "post_attention_layernorm",
-            r'^norm': 'final_norm'
+            r"^norm": "final_norm",
         }
-        
+
         result = sft_name
         for pattern, replacement in name_mapping.items():
             result = re.sub(pattern, replacement, result)
         return result
+
 
 class CheckpointManager:
     def __init__(self):
@@ -257,33 +264,33 @@ class CheckpointManager:
     def save_checkpoint(self, model, optimizer, trained_steps, trained_tokens, out_dir):
         """Save the model/optimizer states/steps to a checkpoint file."""
         path = self._get_checkpoint_path(out_dir)
-        
+
         # Only DP/CP rank 0 will save the model, the weights are the same across all ranks
         if self.dp_rank == 0 and self.cp_rank == 0:
             os.makedirs(out_dir, exist_ok=True)
             raw_model = model.module if self.cp_dp_world_size > 1 else model
             checkpoint = {
-                'model': raw_model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'trained_steps': trained_steps,
-                'trained_tokens': trained_tokens
+                "model": raw_model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "trained_steps": trained_steps,
+                "trained_tokens": trained_tokens,
             }
             torch.save(checkpoint, path)
 
     def load_checkpoint(self, model, optimizer, out_dir):
         """Load the model/optimizer states from the latest checkpoint. Assume the topology is the same."""
         path = self._get_checkpoint_path(out_dir)
-        
+
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint not found at {path}")
-            
+
         checkpoint = torch.load(path)
 
         # Load model weights
         raw_model = model.module if self.cp_dp_world_size > 1 else model
-        raw_model.load_state_dict(checkpoint['model'])
-        
+        raw_model.load_state_dict(checkpoint["model"])
+
         # Load optimizer state
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        
-        return checkpoint['trained_steps'], checkpoint['trained_tokens']
+        optimizer.load_state_dict(checkpoint["optimizer"])
+
+        return checkpoint["trained_steps"], checkpoint["trained_tokens"]

@@ -25,6 +25,18 @@ uv sync
 To use the environment, either prefix commands with `uv run` (e.g. `uv run torchrun ...`)
 or activate the virtualenv with `source .venv/bin/activate`.
 
+# Lint & format
+
+Uses [Ruff](https://docs.astral.sh/ruff/) for linting, import sorting, and formatting.
+With the [Ruff VS Code extension](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff),
+`.vscode/settings.json` enables format-on-save and auto-fix.
+
+```sh
+uv run ruff check .          # lint + type-import rules
+uv run ruff format .         # auto-format
+uv run ruff check . && uv run ruff format --check .  # CI: no changes allowed
+```
+
 # Quick start
 - Get a HF token [here](https://huggingface.co/settings/tokens) to download models from HuggingFace
 
