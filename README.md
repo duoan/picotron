@@ -15,9 +15,15 @@ In the spirit of [NanoGPT](https://github.com/karpathy/nanoGPT), we created Pico
 
 # Install
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+Requires Python 3.10 or 3.11 (`torch==2.1.0` has no wheels for 3.12+).
+
+```sh
+uv sync
 ```
-pip install -e .
-```
+
+To use the environment, either prefix commands with `uv run` (e.g. `uv run torchrun ...`)
+or activate the virtualenv with `source .venv/bin/activate`.
 
 # Quick start
 - Get a HF token [here](https://huggingface.co/settings/tokens) to download models from HuggingFace

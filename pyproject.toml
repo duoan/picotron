@@ -1,0 +1,44 @@
+[project]
+name = "picotron"
+version = "0.1.0"
+description = "Distributed training framework for education and research experimentation"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Haojun Zhao" },
+    { name = "Ferdinand Mom" },
+]
+keywords = ["distributed training", "LLM", "pytorch"]
+dependencies = [
+    "torch==2.1.0",
+    "triton==2.1.0",
+    "numpy==1.26.4",
+    "datasets==2.19.1",
+    "transformers==4.47.0",
+    "flash-attn==2.5.0",
+    "wandb",
+    "huggingface_hub[hf_transfer]",
+]
+
+[project.urls]
+Repository = "https://github.com/huggingface/picotron"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["picotron*"]
+namespaces = true
+
+[tool.uv.extra-build-dependencies]
+# flash-attn does not declare its build deps; torch/numpy must be present at build time.
+flash-attn = [
+    "setuptools<82",
+    "torch==2.1.0",
+    "numpy==1.26.4",
+    "ninja",
+    "packaging",
+    "wheel",
+]
