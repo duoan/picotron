@@ -4,12 +4,22 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from flash_attn.flash_attn_interface import flash_attn_func
-from flash_attn.layers.rotary import apply_rotary_emb
-from flash_attn.ops.triton.layer_norm import layer_norm_fn
+
+# flash-attn is optional: it is only needed on the FLASH_ATTEN=1 code path. Importing it lazily
+# lets picotron run (e.g. with FLASH_ATTEN=0 / SDPA attention) on setups where a matching
+# flash-attn build is unavailable.
+try:
+    from flash_attn.flash_attn_interface import flash_attn_func
+    from flash_attn.layers.rotary import apply_rotary_emb
+    from flash_attn.ops.triton.layer_norm import layer_norm_fn
+except ImportError:
+    flash_attn_func = None
+    apply_rotary_emb = None
+    layer_norm_fn = None
 
 import picotron.process_group_manager as pgm
 from picotron.context_parallel import context_parallel
+from picotron.expert_parallel.expert_parallel import MoELayer
 
 
 def apply_rotary_pos_emb(x, cos, sin):
@@ -270,7 +280,9 @@ class DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attention = Attention(config, layer_idx=layer_idx)
-        self.mlp = MLP(config)
+        # When num_experts > 1 the feed-forward becomes a Mixture-of-Experts layer (expert parallel).
+        # Kept under the `mlp` attribute so the rest of the codebase treats dense/MoE uniformly.
+        self.mlp = MoELayer(config) if getattr(config, "num_experts", 1) > 1 else MLP(config)
         self.layer_idx = layer_idx
         head_dim = config.hidden_size // config.num_attention_heads
         self.cos, self.sin = get_cos_sin(

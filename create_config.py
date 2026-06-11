@@ -17,6 +17,7 @@ def create_single_config(
     out_dir: str,
     tp: int,
     cp: int,
+    ep: int,
     dp: int,
     pp: int,
     pp_engine: str,
@@ -24,6 +25,14 @@ def create_single_config(
     num_hidden_layers: int | None,
     num_attention_heads: int | None,
     num_key_value_heads: int | None,
+    num_experts: int,
+    num_experts_per_tok: int,
+    num_shared_experts: int,
+    ep_overlap: bool,
+    ep_num_tiles: int,
+    ep_fp8_dispatch: bool,
+    moe_latent_dim: int,
+    ep_backend: str,
     grad_acc_steps: int,
     mbs: int,
     seq_len: int,
@@ -61,10 +70,19 @@ def create_single_config(
         tmp_model_config.num_key_value_heads if num_key_value_heads is None else num_key_value_heads
     )
     config_content["model"]["use_fused_adam"] = use_fused_adam
+    config_content["model"]["num_experts"] = num_experts
+    config_content["model"]["num_experts_per_tok"] = num_experts_per_tok
+    config_content["model"]["num_shared_experts"] = num_shared_experts
+    config_content["model"]["ep_overlap"] = ep_overlap
+    config_content["model"]["ep_num_tiles"] = ep_num_tiles
+    config_content["model"]["ep_fp8_dispatch"] = ep_fp8_dispatch
+    config_content["model"]["moe_latent_dim"] = moe_latent_dim
+    config_content["model"]["ep_backend"] = ep_backend
     del tmp_model_config
 
     config_content["distributed"]["tp_size"] = tp
     config_content["distributed"]["cp_size"] = cp
+    config_content["distributed"]["ep_size"] = ep
     config_content["distributed"]["dp_size"] = dp
     config_content["distributed"]["pp_size"] = pp
     config_content["distributed"]["pp_engine"] = pp_engine
@@ -99,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, help="Output directory to store the configs", default="tmp")
     parser.add_argument("--tp", type=int, help="number of tensor parallelism", default=1)
     parser.add_argument("--cp", type=int, help="number of context parallelism", default=1)
+    parser.add_argument("--ep", type=int, help="number of expert parallelism", default=1)
     parser.add_argument("--dp", type=int, help="number of data parallelism", default=1)
     parser.add_argument("--pp", type=int, help="number of pipeline parallelism", default=1)
     parser.add_argument("--pp_engine", type=str, help="pipeline parallel engine", default="1f1b")
@@ -108,6 +127,16 @@ if __name__ == "__main__":
     parser.add_argument("--num_hidden_layers", type=int, help="Number of hidden layers", default=None)
     parser.add_argument("--num_attention_heads", type=int, help="Number of attention heads", default=None)
     parser.add_argument("--num_key_value_heads", type=int, help="Number of key value heads", default=None)
+    parser.add_argument("--num_experts", type=int, help="Number of MoE experts (1 = dense FFN)", default=1)
+    parser.add_argument("--num_experts_per_tok", type=int, help="Top-k experts routed per token", default=1)
+    parser.add_argument("--num_shared_experts", type=int, help="Number of always-on shared experts", default=0)
+    parser.add_argument("--ep_overlap", type=int, help="Overlap dispatch with shared expert (1/0)", default=1)
+    parser.add_argument(
+        "--ep_num_tiles", type=int, help="MegaScale-style token tiles for comm/comp overlap (1=off)", default=1
+    )
+    parser.add_argument("--ep_fp8_dispatch", type=int, help="FP8 (E4M3) dispatch all-to-all (1/0)", default=0)
+    parser.add_argument("--moe_latent_dim", type=int, help="LatentMoE latent dim (0/>=hidden = off)", default=0)
+    parser.add_argument("--ep_backend", type=str, help="MoE dispatch/combine backend: torch|deepep", default="torch")
     parser.add_argument("--grad_acc_steps", type=int, help="grad accumulation", default=1)
     parser.add_argument("--mbs", type=int, help="micro batch size", default=1)
     parser.add_argument("--seq_len", type=int, help="Sequence length", default=1024)
@@ -124,6 +153,7 @@ if __name__ == "__main__":
         out_dir=args.out_dir,
         tp=args.tp,
         cp=args.cp,
+        ep=args.ep,
         dp=args.dp,
         pp=args.pp,
         pp_engine=args.pp_engine,
@@ -131,6 +161,14 @@ if __name__ == "__main__":
         num_hidden_layers=args.num_hidden_layers,
         num_attention_heads=args.num_attention_heads,
         num_key_value_heads=args.num_key_value_heads,
+        num_experts=args.num_experts,
+        num_experts_per_tok=args.num_experts_per_tok,
+        num_shared_experts=args.num_shared_experts,
+        ep_overlap=bool(args.ep_overlap),
+        ep_num_tiles=args.ep_num_tiles,
+        ep_fp8_dispatch=bool(args.ep_fp8_dispatch),
+        moe_latent_dim=args.moe_latent_dim,
+        ep_backend=args.ep_backend,
         grad_acc_steps=args.grad_acc_steps,
         mbs=args.mbs,
         seq_len=args.seq_len,

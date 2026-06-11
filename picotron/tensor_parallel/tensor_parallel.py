@@ -53,7 +53,12 @@ def apply_tensor_parallel(model):
 
     for layer in model.decoder_layers:
         for module_name, linear_proj_name, style in module_linear_name_stype_mapping_list:
-            _replace_module(getattr(layer, module_name), linear_proj_name, style)
+            module = getattr(layer, module_name)
+            # MoE layers distribute their FFN via expert parallelism, not tensor parallelism,
+            # so the plain up/gate/down projections only exist on dense MLP layers.
+            if not hasattr(module, linear_proj_name):
+                continue
+            _replace_module(module, linear_proj_name, style)
 
     _replace_module(model, "embedding", "vocab")
     _replace_module(model, "final_proj", "column", args={"gather_output": True})

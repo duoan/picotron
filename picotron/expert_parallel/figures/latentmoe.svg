@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="l_ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#28323b"/>
+    </marker>
+  </defs>
+  <text x="20" y="34" font-size="16" fill="#28323b" font-weight="bold">LatentMoE: route and compute in a small latent dim l (l much less than d)</text>
+
+  <!-- x (d) thick -->
+  <rect x="30" y="150" width="60" height="64" rx="8" fill="#eceef0" stroke="#28323b" stroke-width="2"/>
+  <text x="60" y="187" text-anchor="middle" font-size="20" fill="#28323b" font-style="italic">x</text>
+  <text x="60" y="232" text-anchor="middle" font-size="12" fill="#8a97a0">dim d</text>
+
+  <!-- down proj -->
+  <rect x="150" y="150" width="100" height="64" rx="8" fill="#d9efe2" stroke="#4e9e72" stroke-width="2"/>
+  <text x="200" y="180" text-anchor="middle" font-size="14" fill="#28323b">down</text>
+  <text x="200" y="200" text-anchor="middle" font-size="13" fill="#28323b">d to l</text>
+  <line x1="90" y1="182" x2="148" y2="182" stroke="#28323b" stroke-width="6" marker-end="url(#l_ar)"/>
+
+  <!-- latent EP block (thin lines = small payload) -->
+  <rect x="300" y="120" width="380" height="120" rx="10" fill="#eaf3f8" stroke="#2f7da6" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="490" y="112" text-anchor="middle" font-size="13" fill="#2f7da6">all in latent dim l (small)</text>
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <rect x="318" y="160" width="100" height="44" rx="6" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="368" y="187">dispatch</text>
+    <rect x="438" y="160" width="100" height="44" rx="6" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/><text x="488" y="187">experts (l)</text>
+    <rect x="558" y="160" width="100" height="44" rx="6" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="608" y="187">combine</text>
+  </g>
+  <line x1="250" y1="182" x2="316" y2="182" stroke="#28323b" stroke-width="2" marker-end="url(#l_ar)"/>
+  <line x1="418" y1="182" x2="436" y2="182" stroke="#28323b" stroke-width="2" marker-end="url(#l_ar)"/>
+  <line x1="538" y1="182" x2="556" y2="182" stroke="#28323b" stroke-width="2" marker-end="url(#l_ar)"/>
+
+  <!-- up proj -->
+  <rect x="710" y="150" width="100" height="64" rx="8" fill="#d9efe2" stroke="#4e9e72" stroke-width="2"/>
+  <text x="760" y="180" text-anchor="middle" font-size="14" fill="#28323b">up</text>
+  <text x="760" y="200" text-anchor="middle" font-size="13" fill="#28323b">l to d</text>
+  <line x1="680" y1="182" x2="708" y2="182" stroke="#28323b" stroke-width="2" marker-end="url(#l_ar)"/>
+
+  <!-- y (d) thick -->
+  <rect x="880" y="150" width="60" height="64" rx="8" fill="#eceef0" stroke="#28323b" stroke-width="2"/>
+  <text x="910" y="187" text-anchor="middle" font-size="20" fill="#28323b" font-style="italic">y</text>
+  <line x1="810" y1="182" x2="878" y2="182" stroke="#28323b" stroke-width="6" marker-end="url(#l_ar)"/>
+
+  <!-- router stays in d -->
+  <text x="200" y="270" text-anchor="middle" font-size="12" fill="#8a97a0">router Wg and shared expert stay in full d</text>
+
+  <text x="490" y="305" text-anchor="middle" font-size="14" fill="#28323b">wire bytes ~ l      expert params ~ l      expert FLOPs ~ l      (saving = d / l)</text>
+</svg>

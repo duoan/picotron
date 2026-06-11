@@ -118,7 +118,8 @@ if __name__ == "__main__":
         * config["distributed"]["pp_size"]
         * config["distributed"]["dp_size"]
         * config["distributed"]["cp_size"]
-    ), "world_size must be equal to tp_size * pp_size * dp_size * cp_size"
+        * config["distributed"].get("ep_size", 1)
+    ), "world_size must be equal to tp_size * pp_size * dp_size * cp_size * ep_size"
 
     if backend == "nccl":
         torch.cuda.set_device(local_rank)
@@ -136,6 +137,7 @@ if __name__ == "__main__":
     setup_process_group_manager(
         tp_size=config["distributed"]["tp_size"],
         cp_size=config["distributed"]["cp_size"],
+        ep_size=config["distributed"].get("ep_size", 1),
         pp_size=config["distributed"]["pp_size"],
         dp_size=config["distributed"]["dp_size"],
     )
@@ -143,6 +145,7 @@ if __name__ == "__main__":
         pgm.process_group_manager.tp_rank == 0
         and pgm.process_group_manager.dp_rank == 0
         and pgm.process_group_manager.cp_rank == 0
+        and pgm.process_group_manager.ep_rank == 0
         and pgm.process_group_manager.pp_is_last_stage
     )
 
@@ -182,6 +185,7 @@ if __name__ == "__main__":
             config={
                 "tensor_parallel_size": pgm.process_group_manager.tp_world_size,
                 "context_parallel_size": pgm.process_group_manager.cp_world_size,
+                "expert_parallel_size": pgm.process_group_manager.ep_world_size,
                 "pipeline_parallel_size": pgm.process_group_manager.pp_world_size,
                 "data_parallel_size": pgm.process_group_manager.dp_world_size,
                 "model": config["model"]["name"],
@@ -203,6 +207,19 @@ if __name__ == "__main__":
         model_config.num_attention_heads = config["model"].get("num_attention_heads", model_config.num_attention_heads)
         model_config.num_key_value_heads = config["model"].get("num_key_value_heads", model_config.num_key_value_heads)
         model_config.max_position_embeddings = config["training"]["seq_length"]
+        # Mixture-of-Experts / expert-parallel settings (num_experts=1 keeps the dense FFN).
+        model_config.num_experts = config["model"].get("num_experts", 1)
+        model_config.num_experts_per_tok = config["model"].get("num_experts_per_tok", 1)
+        model_config.num_shared_experts = config["model"].get("num_shared_experts", 0)
+        model_config.norm_topk_prob = config["model"].get("norm_topk_prob", True)
+        # Communication-computation overlap knobs for the MoE layer.
+        model_config.ep_overlap = config["model"].get("ep_overlap", True)
+        model_config.ep_num_tiles = config["model"].get("ep_num_tiles", 1)
+        # Communication-volume reducers (orthogonal to overlap).
+        model_config.ep_fp8_dispatch = config["model"].get("ep_fp8_dispatch", False)
+        model_config.moe_latent_dim = config["model"].get("moe_latent_dim", 0)
+        # Dispatch/combine backend: "torch" (portable) or "deepep" (Hopper SM90+, auto-fallback).
+        model_config.ep_backend = config["model"].get("ep_backend", "torch")
         objects = [model_config]
     else:
         objects = [None]

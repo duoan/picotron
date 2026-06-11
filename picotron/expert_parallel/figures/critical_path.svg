@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" font-family="Helvetica, Arial, sans-serif">
+  <!-- axis -->
+  <text x="20" y="40" font-size="16" fill="#28323b" font-weight="bold">Naive: everything serial on the critical path</text>
+  <line x1="120" y1="90" x2="900" y2="90" stroke="#cdd5da" stroke-width="1"/>
+  <text x="60" y="95" font-size="13" fill="#8a97a0">GPU</text>
+
+  <!-- serial bars -->
+  <rect x="120" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+  <text x="230" y="95" text-anchor="middle" font-size="14" fill="#28323b">dispatch a2a</text>
+  <rect x="340" y="70" width="180" height="40" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/>
+  <text x="430" y="95" text-anchor="middle" font-size="14" fill="#28323b">experts</text>
+  <rect x="520" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+  <text x="630" y="95" text-anchor="middle" font-size="14" fill="#28323b">combine a2a</text>
+
+  <!-- idle annotations -->
+  <text x="230" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
+  <text x="630" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
+
+  <!-- time axis -->
+  <line x1="120" y1="165" x2="740" y2="165" stroke="#28323b" stroke-width="1.5"/>
+  <path d="M740,165 l-8,-4 l0,8 z" fill="#28323b"/>
+  <text x="430" y="185" text-anchor="middle" font-size="13" fill="#8a97a0">wall-clock  =  t(dispatch) + t(experts) + t(combine)</text>
+
+  <!-- ratio callout -->
+  <text x="20" y="235" font-size="15" fill="#28323b">As EP scales, the two a2a's go off-node and grow:</text>
+  <text x="40" y="265" font-size="20" fill="#c8682f" font-weight="bold">rho = t_comm / t_compute  grows</text>
+  <text x="430" y="265" font-size="14" fill="#8a97a0">the two orange bars dominate the step.</text>
+</svg>

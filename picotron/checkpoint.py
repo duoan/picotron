@@ -105,6 +105,10 @@ def init_model_with_materialized_weights(model, model_config, save_dir):
             model.final_proj = FinalProjection(model_config.hidden_size, vocab_size, bias=False)
             state_dict["final_proj.weight"] = torch.zeros(vocab_size, model_config.hidden_size)
 
+    # Any parameter not loaded from the HF checkpoint (e.g. MoE experts, router gate, shared expert)
+    # gets a zero placeholder so strict loading passes; reset_parameters() randomizes it afterwards.
+    initialization_manager.add_missing_params_as_zeros(state_dict)
+
     # Synchronize across distributed processes and load weights
     dist.barrier()
     model.load_state_dict(state_dict, strict=True, assign=True)
@@ -125,6 +129,17 @@ class InitializationManager:
     def init_model_parameters(self):
         self.model.reset_parameters()
 
+    def add_missing_params_as_zeros(self, state_dict):
+        """Add zero placeholders for model parameters absent from ``state_dict``.
+
+        Used for parameters that have no counterpart in the dense HF checkpoint (the MoE expert
+        weights, router gate, and shared expert). They are materialized as zeros here and then
+        properly initialized by reset_parameters().
+        """
+        for name, param in self.model.named_parameters():
+            if name not in state_dict:
+                state_dict[name] = torch.zeros(param.shape, dtype=torch.float32)
+
     def get_layer_names_in_sft_format(self):
         """Get layer names in safetensors format based on model's layer distribution."""
         decoder_components = [
@@ -138,6 +153,12 @@ class InitializationManager:
             "self_attn.q_proj",
             "self_attn.v_proj",
         ]
+
+        # MoE (expert-parallel) layers replace the dense FFN with experts that are not present in
+        # the dense HF checkpoint, so don't try to load mlp.* weights for them (they are zero-init
+        # placeholders later randomized by reset_parameters()).
+        if getattr(self.model_config, "num_experts", 1) > 1:
+            decoder_components = [c for c in decoder_components if not c.startswith("mlp.")]
 
         # Generate base layer names
         layer_names = []

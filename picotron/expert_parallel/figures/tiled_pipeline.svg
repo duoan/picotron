@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="34" font-size="16" fill="#28323b" font-weight="bold">Tiled pipeline: dispatch(i+1) || experts(i) || combine(i-1)</text>
+
+  <!-- row labels -->
+  <g font-size="13" fill="#8a97a0" text-anchor="end">
+    <text x="150" y="95">dispatch</text>
+    <text x="150" y="150">experts</text>
+    <text x="150" y="205">combine</text>
+  </g>
+
+  <!-- dispatch row (tiles 0..3) -->
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <rect x="170" y="75" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="230" y="99">d0</text>
+    <rect x="300" y="75" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="360" y="99">d1</text>
+    <rect x="430" y="75" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="490" y="99">d2</text>
+    <rect x="560" y="75" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="620" y="99">d3</text>
+
+    <!-- experts row (staggered +1) -->
+    <rect x="300" y="130" width="120" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/><text x="360" y="154">e0</text>
+    <rect x="430" y="130" width="120" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/><text x="490" y="154">e1</text>
+    <rect x="560" y="130" width="120" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/><text x="620" y="154">e2</text>
+    <rect x="690" y="130" width="120" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/><text x="750" y="154">e3</text>
+
+    <!-- combine row (staggered +2) -->
+    <rect x="430" y="185" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="490" y="209">c0</text>
+    <rect x="560" y="185" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="620" y="209">c1</text>
+    <rect x="690" y="185" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="750" y="209">c2</text>
+    <rect x="820" y="185" width="120" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/><text x="880" y="209">c3</text>
+  </g>
+
+  <!-- vertical "concurrent" band -->
+  <rect x="560" y="65" width="120" height="166" fill="none" stroke="#28323b" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="620" y="252" text-anchor="middle" font-size="12" fill="#28323b">one time-step: comm || compute</text>
+
+  <!-- time axis -->
+  <line x1="170" y1="285" x2="940" y2="285" stroke="#28323b" stroke-width="1.5"/>
+  <path d="M940,285 l-8,-4 l0,8 z" fill="#28323b"/>
+  <text x="555" y="305" text-anchor="middle" font-size="13" fill="#8a97a0">time ->   every rank issues exactly N collectives (empty tiles still call the a2a)</text>
+</svg>

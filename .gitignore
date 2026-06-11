@@ -9,3 +9,13 @@ tmp
 debug
 bench
 sandbox
+
+# HF model weights download cache (regenerated at runtime by utils.download_model / train.py)
+hf_model_safetensors/
+
+# Headless Chrome fetched for Marp slide rendering (render_slides.sh keeps it
+# in ~/.cache/marp-chrome; this is just a safety net if it lands in the tree)
+**/chrome/*/chrome-linux64/
+
+# Large regenerable slide export (rebuild via render_slides.sh); PDF/HTML are kept
+*.pptx

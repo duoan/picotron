@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Same code, three fabrics: overlap speedup tracks rho = t_comm/t_compute</text>
+
+  <!-- axes -->
+  <line x1="120" y1="290" x2="900" y2="290" stroke="#28323b" stroke-width="1.5"/>
+  <line x1="120" y1="60" x2="120" y2="290" stroke="#28323b" stroke-width="1.5"/>
+  <!-- 1.0 baseline -->
+  <line x1="120" y1="210" x2="900" y2="210" stroke="#8a97a0" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="112" y="214" text-anchor="end" font-size="12" fill="#8a97a0">1.0x</text>
+  <text x="112" y="166" text-anchor="end" font-size="12" fill="#8a97a0">1.6x</text>
+  <line x1="120" y1="162" x2="900" y2="162" stroke="#eceef0" stroke-width="1"/>
+
+  <!-- bars: height = value*80 from y=290 up -->
+
+  <!-- group 1: L4 PCIe -->
+  <rect x="200" y="162" width="90" height="128" rx="4" fill="#2f7da6"/>
+  <text x="245" y="155" text-anchor="middle" font-size="14" fill="#28323b" font-weight="bold">1.6x</text>
+  <text x="245" y="312" text-anchor="middle" font-size="13" fill="#28323b">2x L4 PCIe</text>
+  <text x="245" y="330" text-anchor="middle" font-size="11" fill="#c8682f">rho large</text>
+
+  <!-- group 2: A100 NVLink -->
+  <rect x="455" y="210" width="90" height="80" rx="4" fill="#8a97a0"/>
+  <text x="500" y="203" text-anchor="middle" font-size="14" fill="#28323b" font-weight="bold">1.0x</text>
+  <text x="500" y="312" text-anchor="middle" font-size="13" fill="#28323b">2x A100 NVLink</text>
+  <text x="500" y="330" text-anchor="middle" font-size="11" fill="#8a97a0">rho ~ 0 (nothing to hide)</text>
+
+  <!-- group 3: NVLink off -->
+  <rect x="710" y="188" width="90" height="102" rx="4" fill="#2f7da6"/>
+  <text x="755" y="181" text-anchor="middle" font-size="14" fill="#28323b" font-weight="bold">1.28x</text>
+  <text x="755" y="312" text-anchor="middle" font-size="13" fill="#28323b">A100, P2P off</text>
+  <text x="755" y="330" text-anchor="middle" font-size="11" fill="#c8682f">rho large again</text>
+
+  <text x="60" y="175" text-anchor="middle" font-size="12" fill="#8a97a0" transform="rotate(-90 60 175)">best-tiled speedup</text>
+</svg>

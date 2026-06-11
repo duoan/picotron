@@ -73,13 +73,20 @@ def get_num_params(model):
     FSDP: Parameters are sharded across data parallel ranks
     """
     tp_world_size = pgm.process_group_manager.tp_world_size
+    ep_world_size = pgm.process_group_manager.ep_world_size
 
     # Count parameters in current PP rank
     local_num_params = 0
     for name, param in model.named_parameters():
+        # MoE experts are sharded across EP ranks (and not across TP ranks).
+        if "mlp.local_experts." in name:
+            local_num_params += param.numel() * ep_world_size
+        # MoE router gate and shared expert are replicated across both TP and EP ranks.
+        elif "mlp.gate." in name or "mlp.shared_expert." in name:
+            local_num_params += param.numel()
         # Parameters split across TP ranks
         # TODO: LayerNorm is also split across TP ranks for sequence parallelism
-        if any(tp_keyword in name.lower() for tp_keyword in ["attention", "mlp", "embed", "final_proj"]):
+        elif any(tp_keyword in name.lower() for tp_keyword in ["attention", "mlp", "embed", "final_proj"]):
             local_num_params += param.numel() * tp_world_size
         else:
             # Parameters replicated across TP ranks (layer norm, biases)
