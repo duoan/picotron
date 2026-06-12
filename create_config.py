@@ -21,6 +21,7 @@ def create_single_config(
     dp: int,
     pp: int,
     pp_engine: str,
+    num_virtual_stages: int,
     model_name: str,
     num_hidden_layers: int | None,
     num_attention_heads: int | None,
@@ -86,6 +87,7 @@ def create_single_config(
     config_content["distributed"]["dp_size"] = dp
     config_content["distributed"]["pp_size"] = pp
     config_content["distributed"]["pp_engine"] = pp_engine
+    config_content["distributed"]["num_virtual_stages"] = num_virtual_stages
     config_content["distributed"]["use_cpu"] = use_cpu
     if use_cpu:
         config_content["environment"]["FLASH_ATTEN"] = "0"
@@ -120,7 +122,21 @@ if __name__ == "__main__":
     parser.add_argument("--ep", type=int, help="number of expert parallelism", default=1)
     parser.add_argument("--dp", type=int, help="number of data parallelism", default=1)
     parser.add_argument("--pp", type=int, help="number of pipeline parallelism", default=1)
-    parser.add_argument("--pp_engine", type=str, help="pipeline parallel engine", default="1f1b")
+    parser.add_argument(
+        "--pp_engine",
+        type=str,
+        help="pipeline parallel engine: afab, 1f1b, zb (Zero-Bubble); interleaved/dualpipe are "
+        "implemented + gradient-validated on the CPU harness (tests/bench_pp_schedules.py) but not "
+        "yet wired into the HF training path",
+        default="1f1b",
+        choices=["afab", "1f1b", "zb", "interleaved", "dualpipe"],
+    )
+    parser.add_argument(
+        "--num_virtual_stages",
+        type=int,
+        help="virtual stages per rank for the interleaved 1F1B engine (Megatron virtual pipeline)",
+        default=2,
+    )
     parser.add_argument(
         "--model_name", type=str, help="Model name to create configs for", default="HuggingFaceTB/SmolLM-360M-Instruct"
     )
@@ -157,6 +173,7 @@ if __name__ == "__main__":
         dp=args.dp,
         pp=args.pp,
         pp_engine=args.pp_engine,
+        num_virtual_stages=args.num_virtual_stages,
         model_name=args.model_name,
         num_hidden_layers=args.num_hidden_layers,
         num_attention_heads=args.num_attention_heads,

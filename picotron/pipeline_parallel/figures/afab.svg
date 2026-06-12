@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 290" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="28" font-size="18" fill="#28323b" font-weight="bold">Micro-batching (GPipe / AFAB): m micro-batches pipelined, p=4 m=4</text>
+
+  <!-- stage labels -->
+  <g font-size="12" fill="#8a97a0">
+    <text x="20" y="87">stage 0</text>
+    <text x="20" y="119">stage 1</text>
+    <text x="20" y="151">stage 2</text>
+    <text x="20" y="183">stage 3</text>
+  </g>
+
+  <!-- idle row backgrounds -->
+  <g>
+    <rect x="80" y="72" width="806" height="26" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="80" y="104" width="806" height="26" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="80" y="136" width="806" height="26" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="80" y="168" width="806" height="26" fill="#eef1f3" stroke="#dde3e7"/>
+  </g>
+
+  <!-- forward cells (blue) -->
+  <g fill="#d6ebf4" stroke="#2f7da6">
+    <rect x="80"  y="73" width="50" height="24" rx="3"/><rect x="138" y="73" width="50" height="24" rx="3"/><rect x="196" y="73" width="50" height="24" rx="3"/><rect x="254" y="73" width="50" height="24" rx="3"/>
+    <rect x="138" y="105" width="50" height="24" rx="3"/><rect x="196" y="105" width="50" height="24" rx="3"/><rect x="254" y="105" width="50" height="24" rx="3"/><rect x="312" y="105" width="50" height="24" rx="3"/>
+    <rect x="196" y="137" width="50" height="24" rx="3"/><rect x="254" y="137" width="50" height="24" rx="3"/><rect x="312" y="137" width="50" height="24" rx="3"/><rect x="370" y="137" width="50" height="24" rx="3"/>
+    <rect x="254" y="169" width="50" height="24" rx="3"/><rect x="312" y="169" width="50" height="24" rx="3"/><rect x="370" y="169" width="50" height="24" rx="3"/><rect x="428" y="169" width="50" height="24" rx="3"/>
+  </g>
+  <text x="200" y="64" font-size="12" fill="#2f7da6" font-weight="bold">all m forwards (F)</text>
+
+  <!-- backward cells (green) -->
+  <g fill="#cfe9d6" stroke="#3a9d5d">
+    <rect x="486" y="169" width="50" height="24" rx="3"/><rect x="544" y="169" width="50" height="24" rx="3"/><rect x="602" y="169" width="50" height="24" rx="3"/><rect x="660" y="169" width="50" height="24" rx="3"/>
+    <rect x="544" y="137" width="50" height="24" rx="3"/><rect x="602" y="137" width="50" height="24" rx="3"/><rect x="660" y="137" width="50" height="24" rx="3"/><rect x="718" y="137" width="50" height="24" rx="3"/>
+    <rect x="602" y="105" width="50" height="24" rx="3"/><rect x="660" y="105" width="50" height="24" rx="3"/><rect x="718" y="105" width="50" height="24" rx="3"/><rect x="776" y="105" width="50" height="24" rx="3"/>
+    <rect x="660" y="73" width="50" height="24" rx="3"/><rect x="718" y="73" width="50" height="24" rx="3"/><rect x="776" y="73" width="50" height="24" rx="3"/><rect x="834" y="73" width="50" height="24" rx="3"/>
+  </g>
+  <text x="690" y="64" font-size="12" fill="#3a9d5d" font-weight="bold">all m backwards (B)</text>
+
+  <!-- bubble annotations -->
+  <text x="92" y="188" font-size="11" fill="#c8682f">bubble (fill)</text>
+  <text x="800" y="92" font-size="11" fill="#c8682f">bubble (drain)</text>
+
+  <!-- time axis -->
+  <line x1="80" y1="204" x2="886" y2="204" stroke="#28323b" stroke-width="1.5"/>
+  <path d="M886,204 l-8,-4 l0,8 z" fill="#28323b"/>
+  <text x="480" y="222" text-anchor="middle" font-size="12" fill="#8a97a0">time</text>
+
+  <text x="20" y="258" font-size="14" fill="#28323b">Stages now overlap (good!), but AFAB must <tspan fill="#c8682f" font-weight="bold">keep every micro-batch's activations alive until backward</tspan> -> memory grows with m.</text>
+  <text x="20" y="280" font-size="13" fill="#8a97a0">The grey triangles at the start (fill) and end (drain) are the pipeline bubble.</text>
+</svg>

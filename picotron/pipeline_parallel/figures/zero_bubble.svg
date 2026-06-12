@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="34" font-size="18" fill="#28323b" font-weight="bold">Zero-Bubble (ZB-H1): split backward into B and W, fill the bubble with W</text>
+
+  <!-- One backward = B + W -->
+  <text x="20" y="78" font-size="14" fill="#28323b" font-weight="bold">A single backward fuses two computations:</text>
+  <rect x="40" y="92" width="180" height="40" rx="6" fill="#cfe9d6" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="130" y="112" text-anchor="middle" font-size="13" fill="#1f4a33" font-weight="bold">B = d(loss)/d(input)</text>
+  <text x="130" y="127" text-anchor="middle" font-size="10" fill="#1f4a33">on the critical path</text>
+  <text x="232" y="117" font-size="20" fill="#8a97a0">+</text>
+  <rect x="252" y="92" width="180" height="40" rx="6" fill="#fdf0c8" stroke="#d6a72f" stroke-width="2"/>
+  <text x="342" y="112" text-anchor="middle" font-size="13" fill="#7a5a12" font-weight="bold">W = d(loss)/d(weight)</text>
+  <text x="342" y="127" text-anchor="middle" font-size="10" fill="#7a5a12">reschedulable, comm-free</text>
+  <text x="450" y="118" font-size="12" fill="#8a97a0">W only needs to finish before optimizer.step()</text>
+
+  <!-- 1F1B timeline with bubble -->
+  <text x="20" y="172" font-size="13" fill="#8a97a0">1F1B (one stage):</text>
+  <rect x="150" y="158" width="60" height="26" rx="3" fill="#bfe0ee" stroke="#2f7da6"/><text x="180" y="175" text-anchor="middle" font-size="11" fill="#1c3f52">F</text>
+  <rect x="212" y="158" width="60" height="26" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="242" y="175" text-anchor="middle" font-size="11" fill="#1f4a33">B+W</text>
+  <rect x="274" y="158" width="120" height="26" rx="3" fill="#f6e1d2" stroke="#c8682f" stroke-dasharray="4 3"/><text x="334" y="175" text-anchor="middle" font-size="11" fill="#c8682f">bubble (idle)</text>
+  <rect x="396" y="158" width="60" height="26" rx="3" fill="#bfe0ee" stroke="#2f7da6"/><text x="426" y="175" text-anchor="middle" font-size="11" fill="#1c3f52">F</text>
+  <rect x="458" y="158" width="60" height="26" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="488" y="175" text-anchor="middle" font-size="11" fill="#1f4a33">B+W</text>
+
+  <!-- ZB timeline: bubble filled by W -->
+  <text x="20" y="232" font-size="13" fill="#8a97a0">ZB-H1 (same stage):</text>
+  <rect x="150" y="218" width="60" height="26" rx="3" fill="#bfe0ee" stroke="#2f7da6"/><text x="180" y="235" text-anchor="middle" font-size="11" fill="#1c3f52">F</text>
+  <rect x="212" y="218" width="44" height="26" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="234" y="235" text-anchor="middle" font-size="11" fill="#1f4a33">B</text>
+  <rect x="258" y="218" width="136" height="26" rx="3" fill="#fdf0c8" stroke="#d6a72f"/><text x="326" y="235" text-anchor="middle" font-size="11" fill="#7a5a12">W (drained into the bubble)</text>
+  <rect x="396" y="218" width="60" height="26" rx="3" fill="#bfe0ee" stroke="#2f7da6"/><text x="426" y="235" text-anchor="middle" font-size="11" fill="#1c3f52">F</text>
+  <rect x="458" y="218" width="44" height="26" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="480" y="235" text-anchor="middle" font-size="11" fill="#1f4a33">B</text>
+
+  <text x="20" y="296" font-size="15" fill="#28323b">The comm pattern is identical to 1F1B (B keeps the same send/recv), so it stays deadlock-free.</text>
+  <text x="20" y="322" font-size="14" fill="#8a97a0">We split at the framework level with two autograd traversals  bit-exact grads, ~2x backward FLOPs.</text>
+  <text x="20" y="346" font-size="14" fill="#8a97a0">The win is bubble reduction on real clusters, not fewer FLOPs.</text>
+</svg>

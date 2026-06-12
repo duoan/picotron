@@ -18,4 +18,4 @@ hf_model_safetensors/
 **/chrome/*/chrome-linux64/
 
 # Large regenerable slide export (rebuild via render_slides.sh); PDF/HTML are kept
-*.pptx
+!*.pptx

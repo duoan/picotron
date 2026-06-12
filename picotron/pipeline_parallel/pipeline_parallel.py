@@ -5,6 +5,54 @@ import torch.nn.functional as F
 import picotron.process_group_manager as pgm
 from picotron.pipeline_parallel.pp_communications import bidirectional_pipeline_communicate, pipeline_communicate
 
+# =============================================================================================
+# Zero-Bubble true B/W split (Qi et al., ICLR 2024, https://arxiv.org/abs/2401.10241)
+# ---------------------------------------------------------------------------------------------
+# A normal nn.Linear backward fuses two matmuls: grad_x = grad_y @ W (the activation gradient,
+# needed by the previous stage — the critical path "B" work) and grad_W = grad_y^T @ x (the weight
+# gradient, only needed before optimizer.step — the reschedulable "W" work). ZB-H1 runs B now and
+# slots W into pipeline bubbles. We split at the *Linear* level: the B pass returns grad_x and stashes
+# (x, grad_y) for each Linear; the W pass later computes grad_W directly from those saved tensors.
+# Total backward FLOPs stay ~1x (each matmul runs once), unlike a two-autograd-traversal split (2x).
+_ZB_DEFER = False  # when True, patched Linear forwards build deferred-weight-grad autograd nodes
+_W_TASKS = []  # closures appended during a B pass; each computes+accumulates one Linear's grad_W
+
+
+class _DeferredLinear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight):
+        ctx.save_for_backward(x, weight)
+        return F.linear(x, weight)
+
+    @staticmethod
+    def backward(ctx, grad_y):
+        x, weight = ctx.saved_tensors
+        grad_x = grad_y.matmul(weight)  # B: activation grad, on the critical path
+
+        def _accumulate_weight_grad():  # W: deferred, runs from saved tensors (no graph needed)
+            gy = grad_y.reshape(-1, grad_y.shape[-1])
+            xx = x.reshape(-1, x.shape[-1])
+            gw = gy.t().matmul(xx)
+            weight.grad = gw if weight.grad is None else weight.grad + gw
+
+        _W_TASKS.append(_accumulate_weight_grad)
+        return grad_x, None
+
+
+_ORIG_LINEAR_FORWARD = nn.Linear.forward
+
+
+def _zb_linear_forward(self, input):
+    # Only defer bias-free trainable Linears (the q/k/v/o/up/gate/down projections that dominate
+    # backward FLOPs). Falls back to the stock path whenever ZB is not the active schedule, so
+    # AFAB/1F1B/interleaved/dualpipe are completely unaffected.
+    if _ZB_DEFER and self.bias is None and self.weight.requires_grad:
+        return _DeferredLinear.apply(input, self.weight)
+    return _ORIG_LINEAR_FORWARD(self, input)
+
+
+nn.Linear.forward = _zb_linear_forward
+
 
 class PipelineParallel(nn.Module):
     """
@@ -23,6 +71,7 @@ class PipelineParallel(nn.Module):
         # Only last stage has normalization and projection layers
         self.final_norm = model.final_norm if pgm.process_group_manager.pp_is_last_stage else nn.Identity()
         self.final_proj = model.final_proj if pgm.process_group_manager.pp_is_last_stage else nn.Identity()
+        self._zb_pending = []  # FIFO of per-microbatch deferred-W task lists (Zero-Bubble schedule)
 
         self.reset_parameters()
 
@@ -80,6 +129,33 @@ class PipelineParallel(nn.Module):
         # torch.autograd.backward will automatically accumulates gradients in the leaves (cf: https://pytorch.org/docs/stable/generated/torch.autograd.backward.html)
         torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad, retain_graph=False, create_graph=False)
         return input_tensor.grad if input_tensor is not None else None
+
+    # --- Zero-Bubble split backward (Qi et al., ICLR 2024, https://arxiv.org/abs/2401.10241) ---
+    # B = gradient w.r.t. the stage *input* (critical path, sent upstream); W = gradient w.r.t. the
+    # stage *weights* (reschedulable). The B pass runs a single autograd.backward over the
+    # deferred-Linear graph: the Linears return grad_x immediately and queue their grad_W as closures
+    # in ``_W_TASKS`` (see ``_DeferredLinear``); the cheap non-Linear params (norms, etc.) accumulate
+    # their grad here as usual. The matching W pass just runs those closures. Each matmul runs once,
+    # so total backward FLOPs stay ~1x (the point of ZB-H1 — fewer bubbles at no extra compute).
+
+    def backward_input(self, input_tensor, output_tensor, output_tensor_grad):
+        """Zero-Bubble 'B' pass: activation grad now, weight grads deferred to the W queue."""
+        if output_tensor_grad is None:
+            output_tensor_grad = torch.ones_like(output_tensor, memory_format=torch.preserve_format)
+        if input_tensor is not None:
+            input_tensor.retain_grad()
+        start = len(_W_TASKS)
+        # Graph can be freed (retain_graph=False): the deferred W closures hold the (x, grad_y) tensors
+        # they need, so W no longer depends on the autograd graph.
+        torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad, retain_graph=False)
+        self._zb_pending.append(_W_TASKS[start:])  # this microbatch's deferred Linear weight grads
+        del _W_TASKS[start:]
+        return input_tensor.grad if input_tensor is not None else None
+
+    def backward_weight(self, output_tensor=None, output_tensor_grad=None):
+        """Zero-Bubble 'W' pass: drain one microbatch's deferred Linear weight grads (FIFO)."""
+        for task in self._zb_pending.pop(0):
+            task()
 
 
 def train_step_pipeline_afab(model, data_loader, tensor_shapes, device, dtype):

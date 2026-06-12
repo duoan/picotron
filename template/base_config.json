@@ -6,6 +6,7 @@
         "pp_size": 1,
         "dp_size": 1,
         "pp_engine": "1f1b",
+        "num_virtual_stages": 2,
         "backend": "nccl",
         "use_cpu": false
     },

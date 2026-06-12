@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="32" font-size="18" fill="#28323b" font-weight="bold">Pipeline parallelism: split the model by depth, one stage per device</text>
+
+  <!-- device boxes -->
+  <g>
+    <rect x="30"  y="78" width="200" height="150" rx="8" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+    <text x="130" y="102" text-anchor="middle" font-size="14" fill="#2f7da6" font-weight="bold">GPU 0 / stage 0</text>
+    <rect x="50" y="118" width="160" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="130" y="137" text-anchor="middle" font-size="12" fill="#1c3f52">Embedding</text>
+    <rect x="50" y="152" width="160" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="130" y="171" text-anchor="middle" font-size="12" fill="#1c3f52">Layers 0-3</text>
+
+    <rect x="270" y="78" width="200" height="150" rx="8" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+    <text x="370" y="102" text-anchor="middle" font-size="14" fill="#2f7da6" font-weight="bold">GPU 1 / stage 1</text>
+    <rect x="290" y="135" width="160" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="370" y="154" text-anchor="middle" font-size="12" fill="#1c3f52">Layers 4-7</text>
+
+    <rect x="510" y="78" width="200" height="150" rx="8" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+    <text x="610" y="102" text-anchor="middle" font-size="14" fill="#2f7da6" font-weight="bold">GPU 2 / stage 2</text>
+    <rect x="530" y="135" width="160" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="610" y="154" text-anchor="middle" font-size="12" fill="#1c3f52">Layers 8-11</text>
+
+    <rect x="750" y="78" width="220" height="150" rx="8" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+    <text x="860" y="102" text-anchor="middle" font-size="14" fill="#2f7da6" font-weight="bold">GPU 3 / stage 3</text>
+    <rect x="770" y="118" width="180" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="860" y="137" text-anchor="middle" font-size="12" fill="#1c3f52">Layers 12-15</text>
+    <rect x="770" y="152" width="180" height="28" rx="4" fill="#d6ebf4" stroke="#2f7da6"/><text x="860" y="171" text-anchor="middle" font-size="12" fill="#1c3f52">Norm + LM head</text>
+  </g>
+
+  <defs>
+    <marker id="fwd" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#2f7da6"/></marker>
+    <marker id="bwd" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#3a9d5d"/></marker>
+  </defs>
+
+  <!-- forward activation arrows (top) -->
+  <line x1="230" y1="130" x2="268" y2="130" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#fwd)"/>
+  <line x1="470" y1="130" x2="508" y2="130" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#fwd)"/>
+  <line x1="710" y1="130" x2="748" y2="130" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#fwd)"/>
+  <text x="500" y="68" text-anchor="middle" font-size="13" fill="#2f7da6" font-weight="bold">forward: send activations to the next stage --></text>
+
+  <!-- backward gradient arrows (bottom) -->
+  <line x1="268" y1="205" x2="230" y2="205" stroke="#3a9d5d" stroke-width="2.5" marker-end="url(#bwd)"/>
+  <line x1="508" y1="205" x2="470" y2="205" stroke="#3a9d5d" stroke-width="2.5" marker-end="url(#bwd)"/>
+  <line x1="748" y1="205" x2="710" y2="205" stroke="#3a9d5d" stroke-width="2.5" marker-end="url(#bwd)"/>
+  <text x="500" y="258" text-anchor="middle" font-size="13" fill="#3a9d5d" font-weight="bold"><-- backward: send input-gradients to the previous stage</text>
+
+  <text x="500" y="300" text-anchor="middle" font-size="14" fill="#8a97a0">Each GPU talks only to its two neighbors (one point-to-point hop per boundary) -- cheap, scales across nodes.</text>
+</svg>

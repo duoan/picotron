@@ -88,5 +88,11 @@ def run_remote(command: str) -> int:
 
 @app.local_entrypoint()
 def main(command: str = DEFAULT_COMMAND):
+    # MODAL_SPAWN=1 (with `modal run --detach`) runs the job fully server-side and returns
+    # immediately, so the job survives the local CLI disconnecting. Poll with `modal app logs`.
+    if os.environ.get("MODAL_SPAWN") == "1":
+        call = run_remote.spawn(command)
+        print(f"spawned call id: {call.object_id}")
+        return
     code = run_remote.remote(command)
     print(f"Done. Remote exit code: {code}")

@@ -32,6 +32,7 @@ from picotron.pipeline_parallel.pipeline_parallel import (
     train_step_pipeline_1f1b,
     train_step_pipeline_afab,
 )
+from picotron.pipeline_parallel.pp_schedules import train_step_pipeline_zb
 from picotron.process_group_manager import setup_process_group_manager
 from picotron.tensor_parallel.tensor_parallel import apply_tensor_parallel
 from picotron.utils import (
@@ -287,12 +288,26 @@ if __name__ == "__main__":
         optimizer.zero_grad()
 
         if pgm.process_group_manager.pp_world_size > 1:
-            if config["distributed"]["pp_engine"] == "afab":
+            pp_engine = config["distributed"]["pp_engine"]
+            if pp_engine == "afab":
                 loss = train_step_pipeline_afab(model, data_loader, tensor_shapes, device, dtype)
-            elif config["distributed"]["pp_engine"] == "1f1b":
+            elif pp_engine == "1f1b":
                 loss = train_step_pipeline_1f1b(model, data_loader, tensor_shapes, device, dtype)
+            elif pp_engine == "zb":
+                # Zero-Bubble reuses the PipelineParallel stage (B/W-split backward), so it is a
+                # drop-in over 1F1B with the same weight-materialization / checkpoint path.
+                loss = train_step_pipeline_zb(model, data_loader, tensor_shapes, device, dtype)
+            elif pp_engine in ("interleaved", "dualpipe"):
+                # These use the multi-chunk InterleavedPipelineParallel / DualPipeParallel wrappers,
+                # which the HF checkpoint-materialization path does not yet understand. They are
+                # implemented and gradient-validated on the gloo/CPU harness; see
+                # tests/test_pipeline_parallel.py and tests/bench_pp_schedules.py.
+                raise NotImplementedError(
+                    f"pp_engine='{pp_engine}' is validated via tests/bench_pp_schedules.py but not yet "
+                    "wired into the HF checkpoint/training path (multi-chunk stage layout)."
+                )
             else:
-                raise ValueError(f"Invalid pipeline parallel engine: {config['distributed']['pp_engine']}")
+                raise ValueError(f"Invalid pipeline parallel engine: {pp_engine}")
         else:
             loss = train_step(model, data_loader, device)
 

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="32" font-size="18" fill="#28323b" font-weight="bold">Analytical bubble fraction (p = 4, m = 8, v = 2)</text>
+  <text x="20" y="54" font-size="13" fill="#8a97a0">lower is better  fraction of time a device sits idle in the steady state</text>
+
+  <!-- axis -->
+  <line x1="230" y1="80" x2="230" y2="280" stroke="#28323b" stroke-width="1.5"/>
+  <line x1="230" y1="280" x2="900" y2="280" stroke="#28323b" stroke-width="1.5"/>
+  <!-- gridlines at 0, 0.1, 0.2, 0.3, 0.4 -->
+  <g font-size="11" fill="#8a97a0">
+    <line x1="230" y1="280" x2="230" y2="285" stroke="#28323b"/><text x="230" y="300" text-anchor="middle">0.0</text>
+    <line x1="390" y1="280" x2="390" y2="285" stroke="#28323b"/><text x="390" y="300" text-anchor="middle">0.1</text>
+    <line x1="550" y1="280" x2="550" y2="285" stroke="#28323b"/><text x="550" y="300" text-anchor="middle">0.2</text>
+    <line x1="710" y1="280" x2="710" y2="285" stroke="#28323b"/><text x="710" y="300" text-anchor="middle">0.3</text>
+    <line x1="870" y1="280" x2="870" y2="285" stroke="#28323b"/><text x="870" y="300" text-anchor="middle">0.4</text>
+  </g>
+  <text x="565" y="322" text-anchor="middle" font-size="12" fill="#8a97a0">bubble fraction</text>
+
+  <!-- bars: scale 0.1 -> 160px. value*1600 + 230 = x_end -->
+  <!-- afab / 1f1b: 0.375 -> 230+600=830 -->
+  <rect x="230" y="92"  width="600" height="30" rx="3" fill="#f6e1d2" stroke="#c8682f" stroke-width="1.5"/>
+  <text x="226" y="112" text-anchor="end" font-size="13" fill="#28323b">afab / 1f1b</text>
+  <text x="840" y="112" font-size="12" fill="#c8682f">0.375 = (p-1)/m</text>
+
+  <!-- interleaved v=2: 0.1875 -> 230+300=530 -->
+  <rect x="230" y="134" width="300" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6" stroke-width="1.5"/>
+  <text x="226" y="154" text-anchor="end" font-size="13" fill="#28323b">interleaved (v=2)</text>
+  <text x="540" y="154" font-size="12" fill="#2f7da6">0.188 = (p-1)/(m*v)</text>
+
+  <!-- dualpipe: 0.1875 -> 530 -->
+  <rect x="230" y="176" width="300" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6" stroke-width="1.5" opacity="0.7"/>
+  <text x="226" y="196" text-anchor="end" font-size="13" fill="#28323b">dualpipe (overlapped)</text>
+  <text x="540" y="196" font-size="12" fill="#2f7da6">0.188 = (p-1)/(2m)</text>
+
+  <!-- zb: ~0 -> small sliver -->
+  <rect x="230" y="218" width="14" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d" stroke-width="1.5"/>
+  <text x="226" y="238" text-anchor="end" font-size="13" fill="#28323b">zero-bubble (ZB-H1)</text>
+  <text x="254" y="238" font-size="12" fill="#3a9d5d">H 0 (W fills the bubble; ~2x backward FLOPs)</text>
+</svg>

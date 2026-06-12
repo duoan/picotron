@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="32" font-size="18" fill="#28323b" font-weight="bold">Naive: one batch straight through -- only one stage ever busy</text>
+
+  <!-- stage labels -->
+  <g font-size="13" fill="#8a97a0">
+    <text x="20" y="84">stage 0</text>
+    <text x="20" y="118">stage 1</text>
+    <text x="20" y="152">stage 2</text>
+    <text x="20" y="186">stage 3</text>
+  </g>
+
+  <!-- idle row backgrounds (8 time slots) -->
+  <g>
+    <rect x="90" y="64" width="404" height="28" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="90" y="98" width="404" height="28" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="90" y="132" width="404" height="28" fill="#eef1f3" stroke="#dde3e7"/>
+    <rect x="90" y="166" width="404" height="28" fill="#eef1f3" stroke="#dde3e7"/>
+  </g>
+
+  <!-- forward cells (blue) on the down-staircase -->
+  <g font-size="12" fill="#1c3f52">
+    <rect x="92"  y="66" width="48" height="24" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="116" y="83" text-anchor="middle">F</text>
+    <rect x="142" y="100" width="48" height="24" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="166" y="117" text-anchor="middle">F</text>
+    <rect x="192" y="134" width="48" height="24" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="216" y="151" text-anchor="middle">F</text>
+    <rect x="242" y="168" width="48" height="24" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="266" y="185" text-anchor="middle">F</text>
+  </g>
+  <!-- backward cells (green) on the up-staircase -->
+  <g font-size="12" fill="#1f4a33">
+    <rect x="292" y="168" width="48" height="24" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="316" y="185" text-anchor="middle">B</text>
+    <rect x="342" y="134" width="48" height="24" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="366" y="151" text-anchor="middle">B</text>
+    <rect x="392" y="100" width="48" height="24" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="416" y="117" text-anchor="middle">B</text>
+    <rect x="442" y="66" width="48" height="24" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="466" y="83" text-anchor="middle">B</text>
+  </g>
+
+  <!-- time axis -->
+  <line x1="90" y1="208" x2="494" y2="208" stroke="#28323b" stroke-width="1.5"/>
+  <path d="M494,208 l-8,-4 l0,8 z" fill="#28323b"/>
+  <text x="292" y="226" text-anchor="middle" font-size="12" fill="#8a97a0">time</text>
+
+  <!-- callout -->
+  <text x="560" y="92" font-size="15" fill="#28323b">At any instant exactly <tspan font-weight="bold">one</tspan> of p stages</text>
+  <text x="560" y="114" font-size="15" fill="#28323b">is doing work; the other p-1 wait.</text>
+  <text x="560" y="156" font-size="20" fill="#c8682f" font-weight="bold">utilization ~ 1 / p</text>
+  <text x="560" y="184" font-size="14" fill="#8a97a0">p = 4 -> 75% of the cluster idle.</text>
+  <text x="560" y="206" font-size="14" fill="#8a97a0">We need to keep all stages busy at once.</text>
+</svg>

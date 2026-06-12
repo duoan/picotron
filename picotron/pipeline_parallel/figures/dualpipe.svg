@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="34" font-size="18" fill="#28323b" font-weight="bold">DualPipe: two opposing streams over symmetric, replicated stages</text>
+
+  <!-- ranks as columns, each holds 2 chunks -->
+  <g font-size="12">
+    <!-- rank 0 -->
+    <rect x="80"  y="80" width="150" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/>
+    <text x="155" y="104" text-anchor="middle" fill="#1c3f52">rank 0 | chunk0 = stage 0</text>
+    <rect x="80"  y="124" width="150" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+    <text x="155" y="148" text-anchor="middle" fill="#7a3d12">rank 0 | chunk1 = stage 3</text>
+    <!-- rank 1 -->
+    <rect x="270" y="80" width="150" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/>
+    <text x="345" y="104" text-anchor="middle" fill="#1c3f52">rank 1 | chunk0 = stage 1</text>
+    <rect x="270" y="124" width="150" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+    <text x="345" y="148" text-anchor="middle" fill="#7a3d12">rank 1 | chunk1 = stage 2</text>
+    <!-- rank 2 -->
+    <rect x="460" y="80" width="150" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/>
+    <text x="535" y="104" text-anchor="middle" fill="#1c3f52">rank 2 | chunk0 = stage 2</text>
+    <rect x="460" y="124" width="150" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+    <text x="535" y="148" text-anchor="middle" fill="#7a3d12">rank 2 | chunk1 = stage 1</text>
+    <!-- rank 3 -->
+    <rect x="650" y="80" width="150" height="38" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2"/>
+    <text x="725" y="104" text-anchor="middle" fill="#1c3f52">rank 3 | chunk0 = stage 3</text>
+    <rect x="650" y="124" width="150" height="38" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2"/>
+    <text x="725" y="148" text-anchor="middle" fill="#7a3d12">rank 3 | chunk1 = stage 0</text>
+  </g>
+
+  <!-- down stream arrow (chunk0, head->tail) -->
+  <line x1="230" y1="99" x2="650" y2="99" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#blue)"/>
+  <text x="430" y="72" text-anchor="middle" font-size="13" fill="#2f7da6" font-weight="bold">down stream: micro-batches [0, m) | stage 0->1->2->3 (rank 0->3)</text>
+  <!-- up stream arrow (chunk1, tail->head) -->
+  <line x1="650" y1="143" x2="230" y2="143" stroke="#c8682f" stroke-width="2.5" marker-end="url(#orange)"/>
+  <text x="430" y="186" text-anchor="middle" font-size="13" fill="#c8682f" font-weight="bold">up stream: micro-batches [m, 2m) | stage 0->1->2->3 (rank 3->0)</text>
+
+  <defs>
+    <marker id="blue" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#2f7da6"/></marker>
+    <marker id="orange" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#c8682f"/></marker>
+  </defs>
+
+  <!-- replication callout -->
+  <text x="20" y="234" font-size="14" fill="#28323b" font-weight="bold">Stage s lives on rank s and rank p-1-s (replicated):</text>
+  <line x1="155" y1="162" x2="725" y2="124" stroke="#9aa6ad" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="40" y="258" font-size="13" fill="#8a97a0">stage 0 on rank 0 (chunk0) &amp; rank 3 (chunk1); stage 3 on rank 3 (chunk0) &amp; rank 0 (chunk1); &</text>
+
+  <text x="20" y="300" font-size="14" fill="#28323b">Each stream is a standard 1F1B; afterwards each replicated stage <tspan font-weight="bold">sums its two ranks' gradients</tspan>.</text>
+  <text x="20" y="324" font-size="14" fill="#8a97a0">Summing both streams' grads reproduces a full 2m-micro-batch gradient bit-exactly.</text>
+  <text x="20" y="352" font-size="15" fill="#2f7da6" font-weight="bold">Overlapping the two streams in time -> bubble H (p-1)/(2m)</text>
+  <text x="430" y="352" font-size="13" fill="#8a97a0">(time-domain overlap is the documented extension; ~2x param memory is the cost).</text>
+</svg>
