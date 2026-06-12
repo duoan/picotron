@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 import picotron.process_group_manager as pgm
 from picotron.expert_parallel import deepep_backend, megakernel
+from picotron.expert_parallel.capacity_moe import capacity_moe, compute_capacity
 from picotron.expert_parallel.ep_communications import (
     all_to_all,
     all_to_all_fp8,
@@ -102,6 +103,28 @@ class MoELayer(nn.Module):
         # Hopper SM90+ only). "deepep" transparently falls back to torch when DeepEP is unavailable.
         self.ep_backend = getattr(config, "ep_backend", "torch")
 
+        # Capacity-capped / static-memory dispatch (GShard / Switch / MAI style). When > 0 the experts
+        # run on FIXED-capacity buffers (constant memory regardless of routing imbalance) instead of the
+        # dropless variable-sized path. capacity = factor * (tokens_per_rank * top_k / num_experts).
+        self.ep_capacity_factor = getattr(config, "ep_capacity_factor", 0.0)
+        # True  -> static-memory *dropless*: multiple capped rounds until all tokens are processed.
+        # False -> classic capacity-capped: one round, tokens over capacity are dropped.
+        self.ep_capacity_dropless = getattr(config, "ep_capacity_dropless", True)
+        # Hard cap on dropless rounds (bounds worst-case cost; overflow beyond this is dropped).
+        self.ep_max_rounds = getattr(config, "ep_max_rounds", 8)
+
+        # Load balancing. Two strategies (composable, both off by default):
+        #   * aux loss (Switch/GShard/DeepSeek): a differentiable penalty added to the training loss
+        #     that pushes the router toward uniform expert usage. Collected via ``collect_aux_loss``.
+        #   * loss-free bias (DeepSeek-V3): a per-expert bias added to the router scores for SELECTION
+        #     only (gate weights stay unbiased); updated each step by a sign controller from observed
+        #     load -- no extra gradient/loss term.
+        self.router_aux_loss_coef = getattr(config, "router_aux_loss_coef", 0.0)
+        self.router_bias_update_rate = getattr(config, "router_bias_update_rate", 0.0)
+        self.use_loss_free = self.router_bias_update_rate > 0
+        self.register_buffer("expert_bias", torch.zeros(self.num_experts), persistent=True)
+        self.aux_loss = None  # stashed each forward (training only); drained by collect_aux_loss
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -122,27 +145,71 @@ class MoELayer(nn.Module):
         batch_size, seq_length, _ = x.shape
         tokens = x.reshape(-1, self.hidden_size)  # [T, hidden]
 
-        router_logits = self.gate(tokens)  # [T, num_experts]
-        routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float32)
-        topk_weights, topk_idx = torch.topk(routing_weights, self.top_k, dim=-1)  # [T, k]
-        if self.norm_topk_prob and self.top_k > 1:
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-        topk_weights = topk_weights.to(tokens.dtype)
+        topk_idx, topk_weights = self._route(tokens)  # [T, k], [T, k]
 
-        # Pick the routed-expert execution path (all produce identical results). Each path also
-        # finalizes with the shared expert, which `ep_overlap` runs on a side stream so it is hidden
-        # behind the dispatch/combine comm regardless of which path is chosen:
+        # Pick the routed-expert execution path (all produce identical results in their default config).
+        # Each path also finalizes with the shared expert, which `ep_overlap` runs on a side stream so it
+        # is hidden behind the dispatch/combine comm regardless of which path is chosen:
         #   * deepep   -> DeepEP's CUDA dispatch/combine kernels (Hopper SM90+)
+        #   * capped   -> fixed-capacity static-memory buffers (GShard/Switch/MAI-style)
         #   * tiled    -> overlap dispatch/GEMM/combine across token tiles (MegaScale-style)
         #   * naive    -> blocking dispatch -> experts -> combine
         if self.ep_world_size > 1 and self.ep_backend == "deepep" and deepep_backend.deepep_available():
             expert_out = self._moe_deepep(tokens, topk_idx, topk_weights)
+        elif self.ep_capacity_factor > 0:
+            expert_out = self._moe_capped(tokens, topk_idx, topk_weights)
         elif self.ep_world_size > 1 and self.ep_num_tiles > 1:
             expert_out = self._moe_tiled(tokens, topk_idx, topk_weights)
         else:
             expert_out = self._moe_naive(tokens, topk_idx, topk_weights)  # [T, hidden]
 
         return expert_out.view(batch_size, seq_length, self.hidden_size)
+
+    def _route(self, tokens):
+        """Router: top-k expert selection + gate weights, with optional load balancing.
+
+        Selection optionally uses a per-expert bias (loss-free balancing); the gate *weights* always
+        come from the unbiased softmax. Also stashes the aux-loss term and steps the bias controller.
+        """
+        router_logits = self.gate(tokens)  # [T, num_experts]
+        routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float32)  # [T, E]
+
+        # Loss-free balancing: bias the SELECTION scores toward under-used experts (DeepSeek-V3); the
+        # gate weights below still use the unbiased probabilities so the forward stays unskewed.
+        sel_scores = routing_weights + self.expert_bias if self.use_loss_free else routing_weights
+        topk_idx = torch.topk(sel_scores, self.top_k, dim=-1).indices  # [T, k]
+        topk_weights = routing_weights.gather(-1, topk_idx)  # unbiased gate weights at the selected experts
+        if self.norm_topk_prob and self.top_k > 1:
+            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        topk_weights = topk_weights.to(tokens.dtype)
+
+        self._balance(routing_weights, topk_idx)
+        return topk_idx, topk_weights
+
+    def _balance(self, routing_weights, topk_idx):
+        """Compute the aux-loss term and step the loss-free bias controller from this batch's load."""
+        self.aux_loss = None
+        if not (self.training and (self.router_aux_loss_coef > 0 or self.use_loss_free)):
+            return
+        num_tokens = routing_weights.shape[0]
+        # Hard per-expert assignment count over the top-k choices (detached: a count, not a prob).
+        counts = torch.zeros(self.num_experts, device=routing_weights.device, dtype=routing_weights.dtype)
+        counts.scatter_add_(0, topk_idx.reshape(-1), torch.ones(topk_idx.numel(), device=counts.device, dtype=counts.dtype))
+
+        if self.router_aux_loss_coef > 0:
+            # DeepSeek/Switch aux loss: alpha * sum_e f_e * P_e, with f_e the fraction of assignments to
+            # expert e (scaled by E so a balanced router gives ~1) and P_e the mean router prob for e.
+            f = counts * (self.num_experts / (self.top_k * num_tokens))  # [E]
+            p = routing_weights.mean(dim=0)  # [E], carries gradient to the gate
+            self.aux_loss = self.router_aux_loss_coef * (f * p).sum()
+
+        if self.use_loss_free:
+            # Sign controller (no gradient): raise the bias of under-loaded experts, lower over-loaded.
+            with torch.no_grad():
+                load = counts.clone()
+                if self.ep_world_size > 1:
+                    torch.distributed.all_reduce(load, group=pgm.process_group_manager.ep_group)
+                self.expert_bias += self.router_bias_update_rate * torch.sign(load.mean() - load)
 
     def _expand_routed(self, tokens, topk_idx, topk_weights):
         """Expand to one routed row per (token, selected expert), laid out token-major."""
@@ -214,6 +281,31 @@ class MoELayer(nn.Module):
             y = self._dispatch_combine(routed, expert_idx)
 
         y = self._combine_topk(y, weights, num_tokens)
+        return self._finalize(y, shared)
+
+    def _moe_capped(self, tokens, topk_idx, topk_weights):
+        """MoE on FIXED-capacity buffers (GShard / Switch / MAI static-memory dispatch).
+
+        Instead of sizing buffers to the (imbalanced) per-expert token counts, every (rank, expert)
+        processes exactly ``capacity`` tokens per round, so all activations have a constant shape and
+        memory does not swing with the router. ``ep_capacity_dropless`` chooses between one capped round
+        (drop overflow) and multiple capped rounds (process everything). See ``capacity_moe.py``.
+        """
+        num_tokens = tokens.shape[0]
+        shared = self._shared_start(tokens)  # overlaps the capacity all-to-alls
+        latent = self._maybe_down(tokens)  # full hidden, or latent for LatentMoE
+        token_idx = torch.arange(num_tokens, device=tokens.device).repeat_interleave(self.top_k)  # [T*k]
+        routed = latent[token_idx]
+        expert_idx = topk_idx.reshape(-1)
+        weights = topk_weights.reshape(-1)
+
+        capacity = compute_capacity(num_tokens, self.top_k, self.num_experts, self.ep_capacity_factor)
+        y = capacity_moe(
+            routed, expert_idx, weights, token_idx, num_tokens, self.expert_dim,
+            self.num_experts, self.num_local_experts, self.ep_world_size,
+            pgm.process_group_manager.ep_group, self._grouped_experts,
+            capacity, self.ep_capacity_dropless, self.ep_max_rounds,
+        )  # [T, expert_dim], already gate-weighted and summed per token
         return self._finalize(y, shared)
 
     def _grouped_experts(self, x_sorted, counts):
@@ -345,3 +437,18 @@ class MoELayer(nn.Module):
         y = tiled_moe(routed, gate_w, up_w, down_w, meta)  # [num_rows, expert_dim], routed order
         y = self._combine_topk(y, weights, num_tokens)
         return self._finalize(y, shared)
+
+
+def collect_aux_loss(model):
+    """Sum and drain the load-balancing aux loss stashed on every ``MoELayer`` during the last forward.
+
+    Returns a scalar tensor (with grad) to add to the training loss, or ``None`` when no layer produced
+    one (aux loss disabled, or not in training mode). Each layer's value is consumed (set to ``None``)
+    so it is counted once per step.
+    """
+    total = None
+    for module in model.modules():
+        if isinstance(module, MoELayer) and module.aux_loss is not None:
+            total = module.aux_loss if total is None else total + module.aux_loss
+            module.aux_loss = None
+    return total

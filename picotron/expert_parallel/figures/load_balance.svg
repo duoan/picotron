@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Load balancing: keep every expert busy (per-expert token load)</text>
+
+  <!-- ===== LEFT: no balancing -> collapse ===== -->
+  <text x="60" y="62" font-size="14" fill="#28323b" font-weight="bold">No balancing</text>
+  <line x1="60" y1="270" x2="430" y2="270" stroke="#28323b" stroke-width="1.5"/>
+  <g fill="#d6ebf4" stroke="#2f7da6" stroke-width="1.5">
+    <rect x="72"  y="230" width="28" height="40"/>
+    <rect x="108" y="120" width="28" height="150"/>
+    <rect x="144" y="200" width="28" height="70"/>
+    <rect x="180" y="90"  width="28" height="180"/>
+    <rect x="216" y="240" width="28" height="30"/>
+    <rect x="252" y="150" width="28" height="120"/>
+    <rect x="288" y="70"  width="28" height="200"/>
+    <rect x="324" y="180" width="28" height="90"/>
+  </g>
+  <text x="212" y="292" text-anchor="middle" font-size="13" fill="#c0392b">router collapses onto a few experts &nbsp; (std 1712)</text>
+
+  <!-- ===== RIGHT: balanced ===== -->
+  <text x="560" y="62" font-size="14" fill="#28323b" font-weight="bold">Loss-free bias + aux loss</text>
+  <line x1="560" y1="270" x2="930" y2="270" stroke="#28323b" stroke-width="1.5"/>
+  <g fill="#f6e1d2" stroke="#c8682f" stroke-width="1.5">
+    <rect x="572" y="168" width="28" height="102"/>
+    <rect x="608" y="160" width="28" height="110"/>
+    <rect x="644" y="172" width="28" height="98"/>
+    <rect x="680" y="158" width="28" height="112"/>
+    <rect x="716" y="166" width="28" height="104"/>
+    <rect x="752" y="162" width="28" height="108"/>
+    <rect x="788" y="170" width="28" height="100"/>
+    <rect x="824" y="164" width="28" height="106"/>
+  </g>
+  <text x="712" y="292" text-anchor="middle" font-size="13" fill="#2e7d32">time-averaged load is ~uniform &nbsp; (std 380)</text>
+
+  <!-- footer formulas -->
+  <text x="500" y="324" text-anchor="middle" font-size="13" fill="#8a97a0">aux loss: alpha * sum_e f_e * P_e (grad to gate) &nbsp;|&nbsp; bias: b_e += rate * sign(mean_load - load_e) (no grad)</text>
+</svg>

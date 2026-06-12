@@ -44,10 +44,10 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h1 id="expert-parallelism-from-scratch">Expert Parallelism, from scratch</h1>
 <h2 id="a-custom-expert_parallel-module-i-built-on-top-of-picotron">A custom <code>expert_parallel</code> module I built on top of <code>picotron</code></h2>
-<p>From a naive all-to-all to DeepEP, tiled pipelines, FP8 &amp; LatentMoE</p>
+<p>From a naive all-to-all to DeepEP, tiled pipelines, FP8, LatentMoE — and what it takes to actually <em>train</em> at scale</p>
 <p><span class="muted">extending picotron (DP·PP·CP·TP) with a 5th axis — expert parallelism — and a stack of MoE comm optimizations</span><br />
 <span class="muted">deep dive: autograd · CUDA streams · Triton kernels · the bandwidth lesson</span></p>
 </section>
@@ -81,7 +81,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="what-we-are-optimizing">What we are optimizing</h2>
 <p>A <strong>Mixture-of-Experts</strong> FFN: a router picks the top-<code>k</code> of <code>E</code> experts per token.</p>
 <p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>y</mi><mi>t</mi></msub><mo>=</mo><munder><mo>∑</mo><mrow><mi>e</mi><mo>∈</mo><mtext>top-</mtext><mi>k</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow></munder><msub><mi>g</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>e</mi></mrow></msub><mtext> </mtext><msub><mrow><mi mathvariant="normal">F</mi><mi mathvariant="normal">F</mi><mi mathvariant="normal">N</mi></mrow><mi>e</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mtext>  </mtext><mo>+</mo><mtext>  </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">h</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">d</mi></mrow><mo stretchy="false">(</mo><msub><mi>x</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mi>g</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>e</mi></mrow></msub><mo>=</mo><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mo stretchy="false">(</mo><msub><mi>W</mi><mi>g</mi></msub><msub><mi>x</mi><mi>t</mi></msub><msub><mo stretchy="false">)</mo><mi>e</mi></msub></mrow><annotation encoding="application/x-tex">y_t = \sum_{e \in \text{top-}k(t)} g_{t,e}\, \mathrm{FFN}_e(x_t) \;+\; \mathrm{shared}(x_t), \qquad g_{t,e} = \mathrm{softmax}(W_g x_t)_e 
@@ -175,7 +175,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="ep-tokens-travel-to-their-expert-and-back">EP: tokens travel to their expert and back</h2>
 <p><strong>Expert Parallelism:</strong> shard the <code>E</code> experts across ranks — rank <code>r</code> owns <code>[r·L, (r+1)·L)</code>, <code>L = E/ep_size</code>.<br />
 A token routed to a remote expert needs <strong>two all-to-alls</strong>: dispatch out, combine back.</p>
@@ -262,7 +262,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="ep-the-5th-axis-i-added-to-picotron">EP: the 5th axis I added to picotron</h2>
 <p>Stock picotron is <strong><code>DP × PP × CP × TP</code></strong> (4D). I extended its process-group<br />
 manager to a 5D grid <strong><code>DP × PP × CP × EP × TP</code></strong> and added the MoE layer that uses it.</p>
@@ -324,18 +324,66 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="the-challenge-a-local-op-becomes-a-network-round-trip">The challenge: a local op becomes a network round-trip</h2>
-<p>Without EP, the expert FFN is <strong>pure local compute</strong>. EP spreads experts across GPUs,<br />
-so every token must be <strong>sent to its expert and sent back</strong> — two all-to-alls<br />
-wrapped around the compute.</p>
-<p>That round-trip is what makes EP hard:</p>
-<ul>
-<li><strong>It blocks.</strong> Experts can't start until tokens arrive; the layer can't end until results come back. The GPU sits <strong>idle</strong> during both all-to-alls.</li>
-<li><strong>It gets worse at scale.</strong> More GPUs → traffic leaves the fast NVLink island for slower links, while each GPU's share of compute shrinks. Comm starts to dominate.</li>
-<li><strong>Backward pays it twice.</strong> The gradient pass repeats both all-to-alls, and plain <code>autograd</code> runs them one-after-another — it won't overlap them for you.</li>
-</ul>
-<p>→ So we have two levers: make the waiting <strong>invisible</strong> (overlap) or send <strong>less data</strong> (volume).</p>
+;" data-marpit-pagination-total="38">
+<h2 id="the-challenge-sparsity-breaks-the-dense-playbook">The challenge: sparsity breaks the dense playbook</h2>
+<p><strong>Dense:</strong> every param fires every token → params and compute scale together; sharding keeps comm small.<br />
+<strong>MoE:</strong> only <code>k</code> of <code>E</code> experts fire → total params grow far faster than per-token compute = a <strong>parameter–compute mismatch</strong>.</p>
+<blockquote>
+<p>DeepSeek-V3: <strong>685B</strong> total / <strong>37B</strong> active = <strong>18×</strong>  ·  Kimi-K2 = <strong>31×</strong></p>
+</blockquote>
+<p>That asymmetry creates <strong>three tightly-coupled walls</strong> (NVIDIA <em>Megatron-Core MoE</em>, <a href="https://arxiv.org/abs/2603.07685">arXiv:2603.07685</a>):</p>
+<div style="text-align:center"><svg width="720" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" font-family="Helvetica, Arial, sans-serif">
+  
+  <rect x="120" y="14" width="760" height="50" rx="8" fill="#f0f1f2" stroke="#c9ced3" />
+  <text x="500" y="36" text-anchor="middle" font-size="15" fill="#28323b" font-weight="bold">Root cause: sparsity -- only K of E experts fire per token</text>
+  <text x="500" y="55" text-anchor="middle" font-size="12.5" fill="#8a97a0">parameter-compute mismatch (DeepSeek-V3: 685B total / 37B active = 18x; Kimi-K2 = 31x)</text>
+  
+  <g stroke="#c9ced3" stroke-width="1.5" fill="none">
+    <path d="M500,64 L500,80 L190,80 L190,116" />
+    <path d="M500,80 L500,116" />
+    <path d="M500,80 L810,80 L810,116" />
+  </g>
+  
+  <rect x="60"  y="116" width="260" height="32" rx="4" fill="#2f7da6" />
+  <text x="190" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Memory Wall</text>
+  <rect x="370" y="116" width="260" height="32" rx="4" fill="#c8682f" />
+  <text x="500" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Communication Wall</text>
+  <rect x="680" y="116" width="260" height="32" rx="4" fill="#2e8b6f" />
+  <text x="810" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Compute Wall</text>
+  
+  <rect x="60"  y="150" width="260" height="214" fill="#eaf3f8" stroke="#2f7da6" stroke-width="1.5" />
+  <rect x="370" y="150" width="260" height="214" fill="#fbf0e6" stroke="#c8682f" stroke-width="1.5" />
+  <rect x="680" y="150" width="260" height="214" fill="#e9f5f0" stroke="#2e8b6f" stroke-width="1.5" />
+  
+  <g stroke-width="1" opacity="0.35">
+    <line x1="60"  y1="221" x2="320" y2="221" stroke="#2f7da6" /><line x1="60"  y1="292" x2="320" y2="292" stroke="#2f7da6" />
+    <line x1="370" y1="221" x2="630" y2="221" stroke="#c8682f" /><line x1="370" y1="292" x2="630" y2="292" stroke="#c8682f" />
+    <line x1="680" y1="221" x2="940" y2="221" stroke="#2e8b6f" /><line x1="680" y1="292" x2="940" y2="292" stroke="#2e8b6f" />
+  </g>
+  
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="190" y="186">all E experts resident</text>
+    <text x="190" y="258">params + grads + optim</text>
+    <text x="190" y="330">routing -&gt; memory spikes</text>
+  </g>
+  
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="500" y="178">a2a dispatch + combine</text>
+    <text x="500" y="213">vol ~ T*K*h*(EP-1)/EP</text>
+    <text x="500" y="284">off-node BW drops ~10x</text>
+    <text x="500" y="330">20-60% of the step</text>
+  </g>
+  
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="810" y="178">small GEMMs (idle SMs)</text>
+    <text x="810" y="213">routing/permute ~9%</text>
+    <text x="810" y="284">load imbalance</text>
+    <text x="810" y="330">host / launch overhead</text>
+  </g>
+  
+  <line x1="60" y1="384" x2="940" y2="384" stroke="#28323b" stroke-width="1.2" />
+  <text x="500" y="406" text-anchor="middle" font-size="13" fill="#28323b">Tightly coupled: optimize one wall -&gt; pressure shifts to another</text>
+</svg></div>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="6" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -367,31 +415,29 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="the-two-families-of-optimization">The two families of optimization</h2>
+;" data-marpit-pagination-total="38">
+<h2 id="the-three-walls--what-actually-hurts">The Three Walls — what actually hurts</h2>
 <div class="cols">
 <div>
-<h3 id="1-hide-the-comm-overlap">1. Hide the comm (overlap)</h3>
-<p>Run useful compute <em>while</em> the all-to-all is in flight.</p>
-<ul>
-<li>shared-expert overlap (side stream)</li>
-<li>tiled pipeline (fwd <strong>and</strong> bwd)</li>
-<li>DeepEP kernels (near-zero SM)</li>
-</ul>
-<p>→ helps <strong>only</strong> when comm is a real fraction of the step.</p>
+<h3 id="memory">Memory</h3>
+<p>All <code>E</code> experts' <strong>params + grads + optimizer</strong> stay resident, though only <code>k</code> fire. Relieving it<br />
+just <strong>moves the cost</strong> (shard→BW, recompute→FLOPs, offload→PCIe). Dynamic routing → <strong>memory spikes</strong>.</p>
+<h3 id="communication">Communication</h3>
+<p>dispatch+combine all-to-all, <code>≈ T·k·h·(EP−1)/EP</code> each way. As EP grows it leaves NVLink for<br />
+<strong>inter-node links (~10× slower)</strong>, and sparse compute leaves <strong>little to overlap</strong> → <strong>20–60%</strong> of the step.</p>
 </div>
 <div>
-<h3 id="2-send-fewer-bytes-volume">2. Send fewer bytes (volume)</h3>
-<p>Shrink the payload itself.</p>
+<h3 id="compute-efficiency">Compute efficiency</h3>
 <ul>
-<li>FP8 (E4M3) dispatch</li>
-<li>LatentMoE (route/compute in a small latent dim)</li>
+<li><strong>small GEMMs</strong> from fine-grained experts → idle SMs</li>
+<li><strong>routing/permute</strong> ~9% of layer time</li>
+<li><strong>load imbalance</strong> → some experts idle</li>
+<li><strong>host overhead</strong>: many kernel launches; dropless dynamic shapes force host-device syncs</li>
 </ul>
-<p>→ helps even with <strong>nothing left to hide behind</strong>.</p>
 </div>
 </div>
-<br />
-<p><strong>Orthogonal.</strong> They stack: <code>latent + fp8</code> cuts bytes 8×, and overlap hides whatever remains.</p>
+<p><strong>They're coupled</strong> — fix one, pressure shifts: bigger batch helps GEMMs but ↑memory &amp; comm; CUDA<br />
+Graphs need static shapes (vs dropless); grouping helps compute but complicates balancing.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -423,23 +469,32 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="step-0--the-naive-baseline">Step 0 — the naive baseline</h2>
-<p><code>dispatch → experts → combine</code>, blocking, fully differentiable.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">def</span> <span class="hljs-title function_">_moe_naive</span>(<span class="hljs-params">self, tokens, topk_idx, topk_weights</span>):
-    routed, expert_idx, w = <span class="hljs-variable language_">self</span>._expand_routed(tokens, topk_idx, topk_weights)
-    order, inv, in_list, out_list, local_expert = <span class="hljs-variable language_">self</span>._dest_plan(expert_idx)
-    recv          = all_to_all(routed[order], out_list, in_list, group)   <span class="hljs-comment"># dispatch</span>
-    recv_out      = <span class="hljs-variable language_">self</span>._run_local_experts(recv, local_expert)           <span class="hljs-comment"># grouped GEMM</span>
-    combined      = all_to_all(recv_out, in_list, out_list, group)        <span class="hljs-comment"># combine</span>
-    y = <span class="hljs-variable language_">self</span>._combine_topk(combined[inv], w, num_tokens)                  <span class="hljs-comment"># weight + sum top-k</span>
-    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._finalize(y, shared)
-</code></pre>
-<p>The all-to-all itself is one autograd <code>Function</code> — <strong>backward of an a2a is the reverse a2a</strong>:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">class</span> <span class="hljs-title class_">_AllToAll</span>(torch.autograd.Function):
-    <span class="hljs-keyword">def</span> <span class="hljs-title function_">forward</span>(<span class="hljs-params">ctx, group, x, out_splits, in_splits</span>): ...   <span class="hljs-comment"># all_to_all_single(out, x, out, in)</span>
-    <span class="hljs-keyword">def</span> <span class="hljs-title function_">backward</span>(<span class="hljs-params">ctx, g</span>):  ...                                <span class="hljs-comment"># all_to_all_single(gin, g, in, out)  ← swapped</span>
-</code></pre>
+;" data-marpit-pagination-total="38">
+<h2 id="how-this-talk-knocks-down-the-walls">How this talk knocks down the walls</h2>
+<table>
+<thead>
+<tr>
+<th>Wall</th>
+<th>Levers in this module</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Communication</strong></td>
+<td>overlap (shared-expert · tiled · DeepEP) + volume (FP8 · LatentMoE)</td>
+</tr>
+<tr>
+<td><strong>Memory</strong></td>
+<td>static-memory capacity dispatch (fixed buffers)</td>
+</tr>
+<tr>
+<td><strong>Compute</strong></td>
+<td>grouped-GEMM megakernel · load balancing (aux loss + loss-free bias)</td>
+</tr>
+</tbody>
+</table>
+<p>We start with the <strong>Communication Wall</strong> — the one EP creates — then return to <strong>Memory</strong> and<br />
+<strong>Compute</strong> in <em>Beyond speed</em>. Throughline: <strong>measure <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span></strong>, then spend effort where the wall actually is.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -471,37 +526,31 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="the-question-that-decides-everything">The question that decides everything</h2>
-<p>How much of the step is communication?   <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span></p>
-<div style="text-align:center"><svg width="720" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" font-family="Helvetica, Arial, sans-serif">
-  
-  <text x="20" y="40" font-size="16" fill="#28323b" font-weight="bold">Naive: everything serial on the critical path</text>
-  <line x1="120" y1="90" x2="900" y2="90" stroke="#cdd5da" stroke-width="1" />
-  <text x="60" y="95" font-size="13" fill="#8a97a0">GPU</text>
-  
-  <rect x="120" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2" />
-  <text x="230" y="95" text-anchor="middle" font-size="14" fill="#28323b">dispatch a2a</text>
-  <rect x="340" y="70" width="180" height="40" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2" />
-  <text x="430" y="95" text-anchor="middle" font-size="14" fill="#28323b">experts</text>
-  <rect x="520" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2" />
-  <text x="630" y="95" text-anchor="middle" font-size="14" fill="#28323b">combine a2a</text>
-  
-  <text x="230" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
-  <text x="630" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
-  
-  <line x1="120" y1="165" x2="740" y2="165" stroke="#28323b" stroke-width="1.5" />
-  <path d="M740,165 l-8,-4 l0,8 z" fill="#28323b" />
-  <text x="430" y="185" text-anchor="middle" font-size="13" fill="#8a97a0">wall-clock  =  t(dispatch) + t(experts) + t(combine)</text>
-  
-  <text x="20" y="235" font-size="15" fill="#28323b">As EP scales, the two a2a's go off-node and grow:</text>
-  <text x="40" y="265" font-size="20" fill="#c8682f" font-weight="bold">rho = t_comm / t_compute  grows</text>
-  <text x="430" y="265" font-size="14" fill="#8a97a0">the two orange bars dominate the step.</text>
-</svg></div>
+;" data-marpit-pagination-total="38">
+<h2 id="knocking-down-the-communication-wall-two-levers">Knocking down the Communication Wall: two levers</h2>
+<div class="cols">
+<div>
+<h3 id="1-hide-the-comm-overlap">1. Hide the comm (overlap)</h3>
+<p>Run useful compute <em>while</em> the all-to-all is in flight.</p>
 <ul>
-<li><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≫</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \gg 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≫</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span> (cross-node IB/RoCE, large EP) → <strong>overlap is gold</strong>  ·  <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≪</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \ll 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≪</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span> (NVLink island) → <strong>nothing to hide</strong></li>
+<li>shared-expert overlap (side stream)</li>
+<li>tiled pipeline (fwd <strong>and</strong> bwd)</li>
+<li>DeepEP kernels (near-zero SM)</li>
 </ul>
-<p>We <em>measure</em> <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> on three fabrics and watch the same code flip from <strong>1.6× win</strong> to <strong>no-op</strong>.</p>
+<p>→ helps <strong>only</strong> when comm is a real fraction of the step.</p>
+</div>
+<div>
+<h3 id="2-send-fewer-bytes-volume">2. Send fewer bytes (volume)</h3>
+<p>Shrink the payload itself.</p>
+<ul>
+<li>FP8 (E4M3) dispatch</li>
+<li>LatentMoE (route/compute in a small latent dim)</li>
+</ul>
+<p>→ helps even with <strong>nothing left to hide behind</strong>.</p>
+</div>
+</div>
+<br />
+<p><strong>Orthogonal.</strong> They stack: <code>latent + fp8</code> cuts bytes 8×, and overlap hides whatever remains.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="9" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -533,25 +582,23 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="opt-1--shared-expert-overlap-the-orthogonal-one">Opt 1 — shared-expert overlap (the orthogonal one)</h2>
-<p>DeepSeek-style models add an <strong>always-on shared expert</strong> = pure local compute, <strong>no comm</strong>.</p>
-<p>Idea: run it on a <strong>side CUDA stream</strong> so it overlaps the routed path's all-to-all.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">def</span> <span class="hljs-title function_">_shared_start</span>(<span class="hljs-params">self, tokens</span>):
-    <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> (<span class="hljs-variable language_">self</span>.ep_overlap <span class="hljs-keyword">and</span> <span class="hljs-variable language_">self</span>.ep_world_size &gt; <span class="hljs-number">1</span> <span class="hljs-keyword">and</span> tokens.is_cuda):
-        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.shared_expert(tokens), <span class="hljs-literal">None</span>          <span class="hljs-comment"># serial (CPU/gloo, 1 rank)</span>
-    <span class="hljs-variable language_">self</span>._shared_stream.wait_stream(torch.cuda.current_stream())  <span class="hljs-comment"># tokens ready</span>
-    <span class="hljs-keyword">with</span> torch.cuda.stream(<span class="hljs-variable language_">self</span>._shared_stream):
-        out = <span class="hljs-variable language_">self</span>.shared_expert(tokens)                 <span class="hljs-comment"># runs concurrently with dispatch/combine</span>
-    <span class="hljs-keyword">return</span> out, <span class="hljs-variable language_">self</span>._shared_stream
-
-<span class="hljs-keyword">def</span> <span class="hljs-title function_">_finalize</span>(<span class="hljs-params">self, y, shared</span>):
-    out, stream = shared
-    <span class="hljs-keyword">if</span> stream <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
-        torch.cuda.current_stream().wait_stream(stream)  <span class="hljs-comment"># join before the add</span>
-    <span class="hljs-keyword">return</span> y + out
+;" data-marpit-pagination-total="38">
+<h2 id="step-0--the-naive-baseline">Step 0 — the naive baseline</h2>
+<p><code>dispatch → experts → combine</code>, blocking, fully differentiable.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">def</span> <span class="hljs-title function_">_moe_naive</span>(<span class="hljs-params">self, tokens, topk_idx, topk_weights</span>):
+    routed, expert_idx, w = <span class="hljs-variable language_">self</span>._expand_routed(tokens, topk_idx, topk_weights)
+    order, inv, in_list, out_list, local_expert = <span class="hljs-variable language_">self</span>._dest_plan(expert_idx)
+    recv          = all_to_all(routed[order], out_list, in_list, group)   <span class="hljs-comment"># dispatch</span>
+    recv_out      = <span class="hljs-variable language_">self</span>._run_local_experts(recv, local_expert)           <span class="hljs-comment"># grouped GEMM</span>
+    combined      = all_to_all(recv_out, in_list, out_list, group)        <span class="hljs-comment"># combine</span>
+    y = <span class="hljs-variable language_">self</span>._combine_topk(combined[inv], w, num_tokens)                  <span class="hljs-comment"># weight + sum top-k</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._finalize(y, shared)
 </code></pre>
-<p><strong>Key design choice:</strong> this is <em>not</em> a 4th path. It composes with <strong>naive / tiled / deepep</strong> alike.</p>
+<p>The all-to-all itself is one autograd <code>Function</code> — <strong>backward of an a2a is the reverse a2a</strong>:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">class</span> <span class="hljs-title class_">_AllToAll</span>(torch.autograd.Function):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">forward</span>(<span class="hljs-params">ctx, group, x, out_splits, in_splits</span>): ...   <span class="hljs-comment"># all_to_all_single(out, x, out, in)</span>
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">backward</span>(<span class="hljs-params">ctx, g</span>):  ...                                <span class="hljs-comment"># all_to_all_single(gin, g, in, out)  ← swapped</span>
+</code></pre>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="10" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -583,7 +630,119 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
+<h2 id="the-question-that-decides-everything">The question that decides everything</h2>
+<p>How much of the step is communication?   <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span></p>
+<div style="text-align:center"><svg width="720" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" font-family="Helvetica, Arial, sans-serif">
+  
+  <text x="20" y="40" font-size="16" fill="#28323b" font-weight="bold">Naive: everything serial on the critical path</text>
+  <line x1="120" y1="90" x2="900" y2="90" stroke="#cdd5da" stroke-width="1" />
+  <text x="60" y="95" font-size="13" fill="#8a97a0">GPU</text>
+  
+  <rect x="120" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2" />
+  <text x="230" y="95" text-anchor="middle" font-size="14" fill="#28323b">dispatch a2a</text>
+  <rect x="340" y="70" width="180" height="40" rx="5" fill="#d6ebf4" stroke="#2f7da6" stroke-width="2" />
+  <text x="430" y="95" text-anchor="middle" font-size="14" fill="#28323b">experts</text>
+  <rect x="520" y="70" width="220" height="40" rx="5" fill="#f6e1d2" stroke="#c8682f" stroke-width="2" />
+  <text x="630" y="95" text-anchor="middle" font-size="14" fill="#28323b">combine a2a</text>
+  
+  <text x="230" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
+  <text x="630" y="135" text-anchor="middle" font-size="12" fill="#c8682f">compute idle</text>
+  
+  <line x1="120" y1="165" x2="740" y2="165" stroke="#28323b" stroke-width="1.5" />
+  <path d="M740,165 l-8,-4 l0,8 z" fill="#28323b" />
+  <text x="430" y="185" text-anchor="middle" font-size="13" fill="#8a97a0">wall-clock  =  t(dispatch) + t(experts) + t(combine)</text>
+  
+  <text x="20" y="235" font-size="15" fill="#28323b">As EP scales, the two a2a's go off-node and grow:</text>
+  <text x="40" y="265" font-size="20" fill="#c8682f" font-weight="bold">rho = t_comm / t_compute  grows</text>
+  <text x="430" y="265" font-size="14" fill="#8a97a0">the two orange bars dominate the step.</text>
+</svg></div>
+<ul>
+<li><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≫</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \gg 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≫</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span> (cross-node IB/RoCE, large EP) → <strong>overlap is gold</strong>  ·  <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≪</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \ll 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≪</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span> (NVLink island) → <strong>nothing to hide</strong></li>
+</ul>
+<p>We <em>measure</em> <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> on three fabrics and watch the same code flip from <strong>1.6× win</strong> to <strong>no-op</strong>.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="11" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="11" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-1--shared-expert-overlap-the-orthogonal-one">Opt 1 — shared-expert overlap (the orthogonal one)</h2>
+<p>DeepSeek-style models add an <strong>always-on shared expert</strong> = pure local compute, <strong>no comm</strong>.</p>
+<p>Idea: run it on a <strong>side CUDA stream</strong> so it overlaps the routed path's all-to-all.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">def</span> <span class="hljs-title function_">_shared_start</span>(<span class="hljs-params">self, tokens</span>):
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> (<span class="hljs-variable language_">self</span>.ep_overlap <span class="hljs-keyword">and</span> <span class="hljs-variable language_">self</span>.ep_world_size &gt; <span class="hljs-number">1</span> <span class="hljs-keyword">and</span> tokens.is_cuda):
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.shared_expert(tokens), <span class="hljs-literal">None</span>          <span class="hljs-comment"># serial (CPU/gloo, 1 rank)</span>
+    <span class="hljs-variable language_">self</span>._shared_stream.wait_stream(torch.cuda.current_stream())  <span class="hljs-comment"># tokens ready</span>
+    <span class="hljs-keyword">with</span> torch.cuda.stream(<span class="hljs-variable language_">self</span>._shared_stream):
+        out = <span class="hljs-variable language_">self</span>.shared_expert(tokens)                 <span class="hljs-comment"># runs concurrently with dispatch/combine</span>
+    <span class="hljs-keyword">return</span> out, <span class="hljs-variable language_">self</span>._shared_stream
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">_finalize</span>(<span class="hljs-params">self, y, shared</span>):
+    out, stream = shared
+    <span class="hljs-keyword">if</span> stream <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+        torch.cuda.current_stream().wait_stream(stream)  <span class="hljs-comment"># join before the add</span>
+    <span class="hljs-keyword">return</span> y + out
+</code></pre>
+<p><strong>Key design choice:</strong> this is <em>not</em> a 4th path. It composes with <strong>naive / tiled / deepep</strong> alike.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="12" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="12" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
 <h2 id="opt-1--deep-notes-streams--autograd">Opt 1 — deep notes (streams + autograd)</h2>
 <div style="text-align:center"><svg width="720" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" font-family="Helvetica, Arial, sans-serif">
   <text x="20" y="34" font-size="16" fill="#28323b" font-weight="bold">Shared-expert overlap: hide comm on a side CUDA stream</text>
@@ -617,7 +776,7 @@ section::after { font-size: 16px; }
 </ul>
 <p><span class="muted"><code>num_shared_experts = N</code> merges into one MLP of width <code>N·intermediate</code> (= sum of N experts, one GEMM).</span></p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="11" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="13" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -632,7 +791,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="11" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="13" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -647,7 +806,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="opt-2--tiled-pipeline-forward">Opt 2 — tiled pipeline (forward)</h2>
 <p>Split routed tokens into <code>N</code> tiles; software-pipeline the three stages (MegaScale-MoE):</p>
 <div style="text-align:center"><svg width="760" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" font-family="Helvetica, Arial, sans-serif">
@@ -692,95 +851,6 @@ section::after { font-size: 16px; }
 </code></pre>
 <p>Every rank issues exactly <code>N</code> collectives (empty tiles still call the zero-sized a2a) → <strong>lockstep</strong>.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="12" data-paginate="true" data-theme="gaia" data-style="section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="12" style="--paginate:true;--theme:gaia;--style:section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="opt-2--tiled-backward-the-hard-part">Opt 2 — tiled backward (the hard part)</h2>
-<blockquote>
-<p>MegaScale-MoE's lesson, re-discovered the hard way:<br />
-<strong>do not implement the MoE backward with <code>torch.autograd</code>.</strong></p>
-</blockquote>
-<p>A first version calling <code>torch.autograd.grad</code> twice per tile regressed the full step to <strong>0.87×</strong>.</p>
-<p>Why: autograd schedules backward nodes <strong>serially</strong> — you cannot make it interleave one tile's reverse-a2a with another tile's compute. <strong>You must own the backward schedule.</strong></p>
-<p>Megatron's independence trick: from the same upstream grad, the FFN backward produces <code>d_input</code> and <code>d_weight</code> <strong>independently</strong>:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code>per tile:  dgrad → launch reverse-dispatch a2a(d_input)  ∥  compute wgrad
-           combine_rev(i+1) is prefetched to cover tile i's recompute
-</code></pre>
-<p>→ one recompute pass, no double graph traversal, comm hidden behind <code>wgrad</code>.</p>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="13" data-paginate="true" data-theme="gaia" data-style="section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="13" style="--paginate:true;--theme:gaia;--style:section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="opt-2--the-triton-megakernel">Opt 2 — the Triton megakernel</h2>
-<p>Production-style fused expert FFN (vLLM / MegaBlocks pattern):</p>
-<ul>
-<li><strong>Grouped GEMM</strong>: fixed <code>BLOCK_M=64</code> token blocks, each block belongs to <strong>one</strong> expert (block-aligned tiling). <code>triton.autotune</code> over tile sizes / warps / stages.</li>
-<li>gate &amp; up <strong>fused</strong> into one GEMM <code>w13 = [E, 2I, H]</code> → Triton <code>silu_and_mul</code> → down GEMM.</li>
-<li>routed-weight epilogue fused into the down-GEMM store.</li>
-</ul>
-<p><strong>Explicit backward</strong> (no autograd):</p>
-<p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mtext mathvariant="monospace">dgrad:</mtext><mtext> </mtext></mrow><mi>d</mi><mi>X</mi><mo>=</mo><mi>d</mi><mi>C</mi><mo>⋅</mo><mi>W</mi><mspace width="1em"/><mtext>(reuse fwd GEMM, swap </mtext><mi>W</mi><mtext> strides: </mtext><mi>A</mi><msup><mi>W</mi><mi mathvariant="normal">⊤</mi></msup><mo>→</mo><mi>A</mi><mi>W</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\texttt{dgrad: } dX = dC \cdot W \quad\text{(reuse fwd GEMM, swap } W \text{ strides: } A W^\top \to A W) 
-</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.9167em;vertical-align:-0.2222em;"></span><span class="mord text"><span class="mord texttt">dgrad: </span></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1.1491em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mspace" style="margin-right:1em;"></span><span class="mord text"><span class="mord">(reuse fwd GEMM, swap </span></span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mord text"><span class="mord"> strides: </span></span><span class="mord mathnormal">A</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8991em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">⊤</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mclose">)</span></span></span></span></span></p><p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mtext mathvariant="monospace">wgrad:</mtext><mtext> </mtext></mrow><mi>d</mi><mi>W</mi><mo>=</mo><msup><mi>C</mi><mi mathvariant="normal">⊤</mi></msup><mi>A</mi><mspace width="1em"/><mtext>(dedicated grouped-GEMM kernel)</mtext></mrow><annotation encoding="application/x-tex">\texttt{wgrad: } dW = C^\top A \quad\text{(dedicated grouped-GEMM kernel)} 
-</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.9167em;vertical-align:-0.2222em;"></span><span class="mord text"><span class="mord texttt">wgrad: </span></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.1491em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8991em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">⊤</span></span></span></span></span></span></span></span><span class="mord mathnormal">A</span><span class="mspace" style="margin-right:1em;"></span><span class="mord text"><span class="mord">(dedicated grouped-GEMM kernel)</span></span></span></span></span></span></p><pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">dx_sorted, a_c, di_c = megakernel.fused_moe_dgrad(recv, counts, gate_w, up_w, down_w, d_out)
-wgrads = <span class="hljs-keyword">lambda</span>: megakernel.fused_moe_wgrad(recv, counts, a_c, di_c, d_out)  <span class="hljs-comment"># deferred → overlap</span>
-</code></pre>
-</section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="14" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
@@ -811,20 +881,19 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="opt-3--deepep-backend">Opt 3 — DeepEP backend</h2>
-<p>Swap our <code>torch.distributed</code> a2a for <strong>DeepEP's hand-written CUDA kernels</strong> (Hopper SM90+).</p>
-<ul>
-<li>Saturates NVLink/RDMA at <strong>near-zero SM occupancy</strong> → frees SMs for the GEMM (its real win is the cross-node RDMA path, not raw 2-GPU bandwidth).</li>
-<li>We wrap the <strong>classic intranode <code>Buffer</code></strong> (NVLink P2P), <em>not</em> the V2 <code>ElasticBuffer</code> — the latter needs NCCL GIN, which aborts on single-node clusters (e.g. Modal H100): <em>&quot;NCCL GIN is unavailable&quot;</em>.</li>
-</ul>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">recv_x, handle, recv_idx, recv_w, _ = deepep_backend.dispatch(group, latent, topk_idx, topk_w, E)
-expert_out = <span class="hljs-variable language_">self</span>._deepep_experts(recv_x, recv_idx, recv_w)   <span class="hljs-comment"># grouped FFN + gate weights</span>
-y = deepep_backend.combine(group, expert_out, handle)         <span class="hljs-comment"># sum per-rank contributions</span>
+;" data-marpit-pagination-total="38">
+<h2 id="opt-2--tiled-backward-the-hard-part">Opt 2 — tiled backward (the hard part)</h2>
+<blockquote>
+<p>MegaScale-MoE's lesson, re-discovered the hard way:<br />
+<strong>do not implement the MoE backward with <code>torch.autograd</code>.</strong></p>
+</blockquote>
+<p>A first version calling <code>torch.autograd.grad</code> twice per tile regressed the full step to <strong>0.87×</strong>.</p>
+<p>Why: autograd schedules backward nodes <strong>serially</strong> — you cannot make it interleave one tile's reverse-a2a with another tile's compute. <strong>You must own the backward schedule.</strong></p>
+<p>Megatron's independence trick: from the same upstream grad, the FFN backward produces <code>d_input</code> and <code>d_weight</code> <strong>independently</strong>:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code>per tile:  dgrad → launch reverse-dispatch a2a(d_input)  ∥  compute wgrad
+           combine_rev(i+1) is prefetched to cover tile i's recompute
 </code></pre>
-<p><code>dispatch</code> and <code>combine</code> are <strong>linear transposes</strong> ⇒ autograd backward of one <strong>is</strong> the other.<br />
-Gate weights ride a non-differentiable transport (router grad flows the normal way).</p>
-<p><strong>Always safe:</strong> on A100 (sm_80) <code>deepep_available()</code> is False → transparent fallback to torch.</p>
+<p>→ one recompute pass, no double graph traversal, comm hidden behind <code>wgrad</code>.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="15" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -856,22 +925,20 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="switching-families--reduce-volume">Switching families — reduce <em>volume</em></h2>
-<p>Overlap hides the a2a. But if <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≪</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \ll 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≪</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span>, or you're already hiding everything, the next lever is <strong>fewer bytes on the wire</strong>.</p>
-<div class="cols">
-<div>
-<p><strong>FP8 dispatch</strong><br />
-<code>2 B → ~1 B</code> per element.<br />
-Comm-bound win.</p>
-</div>
-<div>
-<p><strong>LatentMoE</strong><br />
-route/compute in dim <code>l ≪ d</code>.<br />
-Cuts comm <strong>and</strong> FLOPs.</p>
-</div>
-</div>
-<p>These are <em>architecture/precision</em> changes to the payload, independent of <em>how</em> it's moved — so they stack with each other <strong>and</strong> with all three overlap paths.</p>
+;" data-marpit-pagination-total="38">
+<h2 id="opt-2--the-triton-megakernel">Opt 2 — the Triton megakernel</h2>
+<p>Production-style fused expert FFN (vLLM / MegaBlocks pattern):</p>
+<ul>
+<li><strong>Grouped GEMM</strong>: fixed <code>BLOCK_M=64</code> token blocks, each block belongs to <strong>one</strong> expert (block-aligned tiling). <code>triton.autotune</code> over tile sizes / warps / stages.</li>
+<li>gate &amp; up <strong>fused</strong> into one GEMM <code>w13 = [E, 2I, H]</code> → Triton <code>silu_and_mul</code> → down GEMM.</li>
+<li>routed-weight epilogue fused into the down-GEMM store.</li>
+</ul>
+<p><strong>Explicit backward</strong> (no autograd):</p>
+<p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mtext mathvariant="monospace">dgrad:</mtext><mtext> </mtext></mrow><mi>d</mi><mi>X</mi><mo>=</mo><mi>d</mi><mi>C</mi><mo>⋅</mo><mi>W</mi><mspace width="1em"/><mtext>(reuse fwd GEMM, swap </mtext><mi>W</mi><mtext> strides: </mtext><mi>A</mi><msup><mi>W</mi><mi mathvariant="normal">⊤</mi></msup><mo>→</mo><mi>A</mi><mi>W</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\texttt{dgrad: } dX = dC \cdot W \quad\text{(reuse fwd GEMM, swap } W \text{ strides: } A W^\top \to A W) 
+</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.9167em;vertical-align:-0.2222em;"></span><span class="mord text"><span class="mord texttt">dgrad: </span></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1.1491em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mspace" style="margin-right:1em;"></span><span class="mord text"><span class="mord">(reuse fwd GEMM, swap </span></span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mord text"><span class="mord"> strides: </span></span><span class="mord mathnormal">A</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8991em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">⊤</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mclose">)</span></span></span></span></span></p><p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mtext mathvariant="monospace">wgrad:</mtext><mtext> </mtext></mrow><mi>d</mi><mi>W</mi><mo>=</mo><msup><mi>C</mi><mi mathvariant="normal">⊤</mi></msup><mi>A</mi><mspace width="1em"/><mtext>(dedicated grouped-GEMM kernel)</mtext></mrow><annotation encoding="application/x-tex">\texttt{wgrad: } dW = C^\top A \quad\text{(dedicated grouped-GEMM kernel)} 
+</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.9167em;vertical-align:-0.2222em;"></span><span class="mord text"><span class="mord texttt">wgrad: </span></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.1491em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8991em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">⊤</span></span></span></span></span></span></span></span><span class="mord mathnormal">A</span><span class="mspace" style="margin-right:1em;"></span><span class="mord text"><span class="mord">(dedicated grouped-GEMM kernel)</span></span></span></span></span></span></p><pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">dx_sorted, a_c, di_c = megakernel.fused_moe_dgrad(recv, counts, gate_w, up_w, down_w, d_out)
+wgrads = <span class="hljs-keyword">lambda</span>: megakernel.fused_moe_wgrad(recv, counts, a_c, di_c, d_out)  <span class="hljs-comment"># deferred → overlap</span>
+</code></pre>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -903,20 +970,20 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="opt-4--fp8-e4m3-dispatch">Opt 4 — FP8 (E4M3) dispatch</h2>
-<p>DeepSeek-V3 recipe: <strong>FP8 dispatch, BF16 combine</strong>.</p>
-<p>Per-token scale into E4M3's range (max magnitude <strong>448</strong>):</p>
-<p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>s</mi><mi>t</mi></msub><mo>=</mo><mfrac><mrow><munder><mrow><mi>max</mi><mo>⁡</mo></mrow><mi>h</mi></munder><mi mathvariant="normal">∣</mi><msub><mi>x</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>h</mi></mrow></msub><mi mathvariant="normal">∣</mi></mrow><mn>448</mn></mfrac><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>x</mi><mo>^</mo></mover><mi>t</mi></msub><mo>=</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">p</mi></mrow><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mfrac><msub><mi>x</mi><mi>t</mi></msub><msub><mi>s</mi><mi>t</mi></msub></mfrac><mo separator="true">,</mo><mtext> </mtext><mo>±</mo><mn>448</mn><mo fence="true">)</mo></mrow><mo>∈</mo><mtext mathvariant="monospace">e4m3</mtext></mrow><annotation encoding="application/x-tex">s_t = \frac{\max_h |x_{t,h}|}{448}, \qquad \hat{x}_{t} = \mathrm{clip}\!\left(\frac{x_t}{s_t},\, \pm 448\right) \in \texttt{e4m3} 
-</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.5806em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.113em;vertical-align:-0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.427em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">448</span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mop"><span class="mop">max</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mpunct mtight">,</span><span class="mord mathnormal mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mord">∣</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.686em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:2em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.6944em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">x</span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2222em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.4em;vertical-align:-0.95em;"></span><span class="mord"><span class="mord mathrm">clip</span></span><span class="mspace" style="margin-right:-0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">(</span></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.1076em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.836em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">±</span><span class="mord">448</span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">)</span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6111em;"></span><span class="mord text"><span class="mord texttt">e4m3</span></span></span></span></span></span></p><pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">q, scale = _per_token_quant_fp8(x)                       <span class="hljs-comment"># [N,H] fp8, [N] fp32</span>
-dist.all_to_all_single(recv_q.view(uint8), q.view(uint8), ...)   <span class="hljs-comment"># NCCL has no fp8 coll → bitcast</span>
-recv = recv_q.to(bf16) * recv_scale[:, <span class="hljs-literal">None</span>]             <span class="hljs-comment"># dequant on receiver, GEMM in BF16</span>
-</code></pre>
+;" data-marpit-pagination-total="38">
+<h2 id="opt-3--deepep-backend">Opt 3 — DeepEP backend</h2>
+<p>Swap our <code>torch.distributed</code> a2a for <strong>DeepEP's hand-written CUDA kernels</strong> (Hopper SM90+).</p>
 <ul>
-<li>Backward is <strong>straight-through</strong> in BF16 (only the forward <em>activation</em> dispatch is low precision).</li>
-<li>No FP8 tensor cores needed → <strong>works on A100</strong>.</li>
-<li>Measured: <strong>~2× fewer dispatch bytes</strong>, relative L2 error <strong>0.023</strong>.</li>
+<li>Saturates NVLink/RDMA at <strong>near-zero SM occupancy</strong> → frees SMs for the GEMM (its real win is the cross-node RDMA path, not raw 2-GPU bandwidth).</li>
+<li>We wrap the <strong>classic intranode <code>Buffer</code></strong> (NVLink P2P), <em>not</em> the V2 <code>ElasticBuffer</code> — the latter needs NCCL GIN, which aborts on single-node clusters (e.g. Modal H100): <em>&quot;NCCL GIN is unavailable&quot;</em>.</li>
 </ul>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">recv_x, handle, recv_idx, recv_w, _ = deepep_backend.dispatch(group, latent, topk_idx, topk_w, E)
+expert_out = <span class="hljs-variable language_">self</span>._deepep_experts(recv_x, recv_idx, recv_w)   <span class="hljs-comment"># grouped FFN + gate weights</span>
+y = deepep_backend.combine(group, expert_out, handle)         <span class="hljs-comment"># sum per-rank contributions</span>
+</code></pre>
+<p><code>dispatch</code> and <code>combine</code> are <strong>linear transposes</strong> ⇒ autograd backward of one <strong>is</strong> the other.<br />
+Gate weights ride a non-differentiable transport (router grad flows the normal way).</p>
+<p><strong>Always safe:</strong> on A100 (sm_80) <code>deepep_available()</code> is False → transparent fallback to torch.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -948,7 +1015,99 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
+<h2 id="switching-families--reduce-volume">Switching families — reduce <em>volume</em></h2>
+<p>Overlap hides the a2a. But if <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≪</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \ll 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≪</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span>, or you're already hiding everything, the next lever is <strong>fewer bytes on the wire</strong>.</p>
+<div class="cols">
+<div>
+<p><strong>FP8 dispatch</strong><br />
+<code>2 B → ~1 B</code> per element.<br />
+Comm-bound win.</p>
+</div>
+<div>
+<p><strong>LatentMoE</strong><br />
+route/compute in dim <code>l ≪ d</code>.<br />
+Cuts comm <strong>and</strong> FLOPs.</p>
+</div>
+</div>
+<p>These are <em>architecture/precision</em> changes to the payload, independent of <em>how</em> it's moved — so they stack with each other <strong>and</strong> with all three overlap paths.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="18" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="18" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-4--fp8-e4m3-dispatch">Opt 4 — FP8 (E4M3) dispatch</h2>
+<p>DeepSeek-V3 recipe: <strong>FP8 dispatch, BF16 combine</strong>.</p>
+<p>Per-token scale into E4M3's range (max magnitude <strong>448</strong>):</p>
+<p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>s</mi><mi>t</mi></msub><mo>=</mo><mfrac><mrow><munder><mrow><mi>max</mi><mo>⁡</mo></mrow><mi>h</mi></munder><mi mathvariant="normal">∣</mi><msub><mi>x</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>h</mi></mrow></msub><mi mathvariant="normal">∣</mi></mrow><mn>448</mn></mfrac><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>x</mi><mo>^</mo></mover><mi>t</mi></msub><mo>=</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">p</mi></mrow><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mfrac><msub><mi>x</mi><mi>t</mi></msub><msub><mi>s</mi><mi>t</mi></msub></mfrac><mo separator="true">,</mo><mtext> </mtext><mo>±</mo><mn>448</mn><mo fence="true">)</mo></mrow><mo>∈</mo><mtext mathvariant="monospace">e4m3</mtext></mrow><annotation encoding="application/x-tex">s_t = \frac{\max_h |x_{t,h}|}{448}, \qquad \hat{x}_{t} = \mathrm{clip}\!\left(\frac{x_t}{s_t},\, \pm 448\right) \in \texttt{e4m3} 
+</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.5806em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.113em;vertical-align:-0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.427em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">448</span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mop"><span class="mop">max</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">h</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">∣</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span><span class="mpunct mtight">,</span><span class="mord mathnormal mtight">h</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mord">∣</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.686em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:2em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.6944em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">x</span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2222em;"><span class="mord">^</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.4em;vertical-align:-0.95em;"></span><span class="mord"><span class="mord mathrm">clip</span></span><span class="mspace" style="margin-right:-0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">(</span></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.1076em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">t</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.836em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">±</span><span class="mord">448</span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">)</span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6111em;"></span><span class="mord text"><span class="mord texttt">e4m3</span></span></span></span></span></span></p><pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">q, scale = _per_token_quant_fp8(x)                       <span class="hljs-comment"># [N,H] fp8, [N] fp32</span>
+dist.all_to_all_single(recv_q.view(uint8), q.view(uint8), ...)   <span class="hljs-comment"># NCCL has no fp8 coll → bitcast</span>
+recv = recv_q.to(bf16) * recv_scale[:, <span class="hljs-literal">None</span>]             <span class="hljs-comment"># dequant on receiver, GEMM in BF16</span>
+</code></pre>
+<ul>
+<li>Backward is <strong>straight-through</strong> in BF16 (only the forward <em>activation</em> dispatch is low precision).</li>
+<li>No FP8 tensor cores needed → <strong>works on A100</strong>.</li>
+<li>Measured: <strong>~2× fewer dispatch bytes</strong>, relative L2 error <strong>0.023</strong>.</li>
+</ul>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="19" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
 <h2 id="opt-5--latentmoe-nvidia-nemotron">Opt 5 — LatentMoE (NVIDIA Nemotron)</h2>
 <p>Shared <strong>down-projection</strong> <code>d→l</code> before routing/dispatch; experts &amp; a2a live in <code>l</code>; <strong>up-projection</strong> <code>l→d</code> after combine. Router &amp; shared expert stay in full <code>d</code>.</p>
 <div style="text-align:center"><svg width="840" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" font-family="Helvetica, Arial, sans-serif">
@@ -997,7 +1156,7 @@ section::after { font-size: 16px; }
 <li>The <strong>only</strong> optimization here that also cuts <em>compute</em> ⇒ wins even on fast fabrics.</li>
 </ul>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="18" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1012,7 +1171,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="18" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="20" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1027,7 +1186,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="stacking-the-volume-reducers">Stacking the volume reducers</h2>
 <p><code>hidden=4096, latent=1024, inter=4096, tokens=8192</code>, dispatch payload:</p>
 <table>
@@ -1063,7 +1222,7 @@ section::after { font-size: 16px; }
 </table>
 <p>The two are multiplicative on bytes. What that buys in wall-clock depends on <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> → next.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="21" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1078,7 +1237,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="19" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="21" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1093,7 +1252,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="results-i--pcie-is-comm-bound--large">Results I — PCIe is comm-bound (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> large)</h2>
 <p>2× L4, <strong>PCIe</strong>, no NVLink. Single MoE layer (<code>hidden4096 inter4096 experts8 tokens8192</code>, dispatch ≈ 134 MB):</p>
 <table>
@@ -1135,7 +1294,7 @@ section::after { font-size: 16px; }
 <p>End-to-end training step (real <code>Llama</code>, 8192 tok/layer): <strong>tiled-4 → 1.28×</strong> (8636 → 11078 tok/s).</p>
 <p>→ When the link is slow, hiding the a2a is a <strong>big</strong> win.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="22" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1150,7 +1309,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="20" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="22" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1165,7 +1324,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="results-ii--nvlink-is-compute-bound--tiny">Results II — NVLink is compute-bound (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span> tiny)</h2>
 <p>2× A100, <strong>NV12 ≈ 300 GB/s</strong>. Same code, story <strong>inverts</strong>:</p>
 <table>
@@ -1207,7 +1366,7 @@ section::after { font-size: 16px; }
 <p>Even a 537 MB payload moves dispatch+combine (~1 GB) in <strong>~3.6 ms</strong> = <strong>~4.5 % of the step</strong>.<br />
 Nothing to hide → per-tile overhead <strong>regresses</strong> it. <strong>Default <code>ep_num_tiles=1</code> on NVLink.</strong></p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="21" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="23" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1222,7 +1381,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="21" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="23" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1237,7 +1396,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="results-iii--controlled-proof-its-bandwidth-not-hardware">Results III — controlled proof: it's <em>bandwidth</em>, not hardware</h2>
 <p>Same A100 box, same config, forward-only. <strong>Only variable: interconnect bandwidth</strong> (<code>NCCL_P2P_DISABLE=1</code> forces the slow host path).</p>
 <table>
@@ -1275,7 +1434,7 @@ section::after { font-size: 16px; }
 <p>Reducing <code>inter</code> does <strong>not</strong> reproduce this — it leaves comm fast and only exposes fixed per-tile launch overhead (tiled-6 → 0.43×). <strong>Only throttling bandwidth restores the bottleneck.</strong></p>
 </blockquote>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="22" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="24" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1290,7 +1449,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="22" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="24" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1305,7 +1464,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="the-picture-speedup-tracks-bandwidth-not-hardware">The picture: speedup tracks bandwidth, not hardware</h2>
 <div style="text-align:center"><svg width="780" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" font-family="Helvetica, Arial, sans-serif">
   <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Same code, three fabrics: overlap speedup tracks rho = t_comm/t_compute</text>
@@ -1337,7 +1496,7 @@ section::after { font-size: 16px; }
 </svg></div>
 <p>Identical code &amp; config. The overlap win appears <strong>only</strong> where comm is a real fraction of the step — exactly the cross-node / large-EP regime where production MoE lives.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="23" data-paginate="true" data-theme="gaia" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="25" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1352,7 +1511,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="23" style="--paginate:true;--theme:gaia;--style:section {
+" lang="en-US" data-marpit-pagination="25" style="--paginate:true;--theme:gaia;--style:section {
   font-size: 26px;
   line-height: 1.35;
 }
@@ -1367,7 +1526,7 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
 <h2 id="results-iv--h100--deepep">Results IV — H100 + DeepEP</h2>
 <p>Built from source on <strong>2× H100 (NVLink) via Modal</strong> (<code>modal run modal_run.py</code>). All correctness checks pass on real Hopper (DeepEP vs torch, fwd <strong>and</strong> bwd).</p>
 <table>
@@ -1403,129 +1562,6 @@ section::after { font-size: 16px; }
 <p>DeepEP matches torch to bf16 and is ~1.2× faster <strong>even on one NVLink node</strong> (frees SMs, skips our explicit permute). The big wins are at scale / cross-node.</p>
 <p>Compress on H100 (fwd): latent <strong>2.41×</strong>, latent+fp8 2.26× — same story as A100.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="24" data-paginate="true" data-theme="gaia" data-style="section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="24" style="--paginate:true;--theme:gaia;--style:section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="the-big-lesson">The big lesson</h2>
-<div class="cols">
-<div>
-<h3 id="overlap-3-paths">Overlap (3 paths)</h3>
-<p><strong>Bandwidth-bound.</strong> Pays off iff <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span> is non-trivial:</p>
-<ul>
-<li>cross-node IB/RoCE <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/></li>
-<li>large EP degree <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/></li>
-<li>single-node NVLink <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/></li>
-</ul>
-</div>
-<div>
-<h3 id="latentmoe">LatentMoE</h3>
-<p><strong>Compute-bound win too.</strong> Cuts FLOPs, so it pays off <strong>even on NVLink</strong> (2.14×).<br />
-The one lever that doesn't need a comm bottleneck.</p>
-<h3 id="fp8-dispatch">FP8 dispatch</h3>
-<p>Comm-bound like overlap (+7% off-NVLink, slight regression on NVLink).</p>
-</div>
-</div>
-<br />
-<p>Production MoE lives in the <strong>cross-node, large-EP</strong> regime → that's the <code>NCCL_P2P_DISABLE=1</code> row, where everything here compounds.</p>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="25" data-paginate="true" data-theme="gaia" data-style="section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-" lang="en-US" data-marpit-pagination="25" style="--paginate:true;--theme:gaia;--style:section {
-  font-size: 26px;
-  line-height: 1.35;
-}
-section.lead h1 { font-size: 50px; }
-h1 { font-size: 38px; }
-h2 { font-size: 32px; }
-pre, code { font-size: 19px; }
-table { font-size: 21px; }
-.small { font-size: 20px; }
-.muted { color: #888; }
-.cols { display: flex; gap: 1.2rem; }
-.cols &gt; div { flex: 1; }
-section img { display: block; margin: 0.2em auto; }
-section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="decision-guide">Decision guide</h2>
-<table>
-<thead>
-<tr>
-<th>Your situation</th>
-<th>Turn on</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Single-node NVLink, few tokens/layer</td>
-<td><code>ep_num_tiles=1</code>, <code>ep_overlap</code> ~free, skip FP8</td>
-</tr>
-<tr>
-<td>Single-node NVLink, want speed</td>
-<td><strong>LatentMoE</strong> (cuts compute)</td>
-</tr>
-<tr>
-<td>Cross-node / IB / large EP, ≳8k tok/layer</td>
-<td><strong>tiled-N</strong> (+ overlap)</td>
-</tr>
-<tr>
-<td>Hopper + want SMs back</td>
-<td><strong><code>ep_backend=&quot;deepep&quot;</code></strong></td>
-</tr>
-<tr>
-<td>Slow fabric, comm-bound</td>
-<td><strong>FP8 dispatch</strong> + LatentMoE (8× bytes)</td>
-</tr>
-<tr>
-<td>Always</td>
-<td>leave knobs on — all auto-fallback &amp; bit-exact</td>
-</tr>
-</tbody>
-</table>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-jsonc"><span class="hljs-attr">&quot;ep_overlap&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_num_tiles&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">4</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_fp8_dispatch&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">false</span></span><span class="hljs-punctuation">,</span>
-<span class="hljs-attr">&quot;moe_latent_dim&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1024</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_backend&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;deepep&quot;</span>
-</code></pre>
-</section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="26" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
   line-height: 1.35;
@@ -1556,18 +1592,44 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h2 id="recap--the-optimization-ladder">Recap — the optimization ladder</h2>
-<ol>
-<li><strong>Naive</strong> a2a dispatch/combine — differentiable, reverse-a2a backward.</li>
-<li><strong>Shared-expert overlap</strong> — side stream, composes with every path.</li>
-<li><strong>Tiled pipeline</strong> — fwd ∥; backward needs <strong>explicit kernels</strong> (autograd-twice = 0.87×).</li>
-<li><strong>Megakernel</strong> — grouped GEMM; dgrad by stride-swap, dedicated wgrad.</li>
-<li><strong>DeepEP</strong> — Hopper kernels, near-zero SM, classic <code>Buffer</code>, auto-fallback.</li>
-<li><strong>FP8 dispatch</strong> — E4M3 per-token scale, straight-through BF16 backward, 2× bytes.</li>
-<li><strong>LatentMoE</strong> — route/compute in <code>l</code>, cuts comm <strong>and</strong> FLOPs, stacks to 8× with FP8.</li>
-</ol>
-<p><strong>Throughline:</strong> measure <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span>. Hide comm where it's expensive; cut bytes/FLOPs where it isn't.</p>
+;" data-marpit-pagination-total="38">
+<h2 id="results-v--ep-scaling-the-wall-live-8%C3%97-h100">Results V — EP scaling: the wall, live (8× H100)</h2>
+<p>Weak scaling (4 experts/GPU, 8192 tok/GPU fixed; <code>num_experts = 4·ep</code>). <code>slowlink</code> = <code>NCCL_P2P_DISABLE=1</code> (emulates cross-node). Forward, one MoE layer:</p>
+<table>
+<thead>
+<tr>
+<th>ep</th>
+<th>NVLink plain</th>
+<th>slowlink plain</th>
+<th>ρ ≈ comm/comp</th>
+<th>slowlink best tiled</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>11.2 ms</td>
+<td>45.4 ms</td>
+<td><strong>3.1</strong></td>
+<td><strong>1.17×</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>12.1 ms</td>
+<td>64.0 ms</td>
+<td><strong>4.3</strong></td>
+<td><strong>1.14×</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>12.3 ms</td>
+<td><strong>203.7 ms</strong></td>
+<td><strong>15.5</strong></td>
+<td><strong>1.16×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Per-rank payload is <strong>constant</strong>, yet bandwidth-bound a2a explodes <strong>45→204 ms</strong> (compute flat ~12 ms) → ρ blows up <strong>3→15</strong>: <em>the communication wall</em>. Overlap recovers ~1.15× fwd, but at ep=8 <strong>fwd+bwd regresses to 0.88×</strong> — once ρ is double-digit you must <strong>cut comm</strong> (FP8 / LatentMoE / DeepEP), not just hide it.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="27" data-paginate="true" data-class="lead" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -1599,9 +1661,10 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
-<h1 id="appendix">Appendix</h1>
-<h2 id="file-map--how-to-run">file map · how to run</h2>
+;" data-marpit-pagination-total="38">
+<h1 id="beyond-speed">Beyond speed</h1>
+<h2 id="back-to-the-memory--compute-walls">Back to the Memory &amp; Compute walls</h2>
+<p><span class="muted">the comm wall is down — now fixed memory (Memory Wall) + balanced experts (Compute Wall): MAI / GShard / Switch / DeepSeek-V3</span></p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="28" data-paginate="true" data-theme="gaia" data-style="section {
   font-size: 26px;
@@ -1633,7 +1696,636 @@ table { font-size: 21px; }
 .cols &gt; div { flex: 1; }
 section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
-;" data-marpit-pagination-total="28">
+;" data-marpit-pagination-total="38">
+<h2 id="why-speed-isnt-enough">Why speed isn't enough</h2>
+<p>The all-to-all is fast now — but two <strong>router-driven</strong> walls remain, and neither is about latency:</p>
+<div class="cols">
+<div>
+<h3 id="memory-wall-%E2%86%92-memory-swings">Memory Wall → memory swings</h3>
+<p>The router decides per-expert counts <strong>every step</strong>. Dropless buffers track them → activation memory<br />
+fluctuates → allocator <strong>fragmentation &amp; OOM</strong> at scale.</p>
+</div>
+<div>
+<h3 id="compute-wall-%E2%86%92-expert-collapse">Compute Wall → expert collapse</h3>
+<p>A trained router with no balancing pressure piles tokens onto a <strong>few</strong> experts → the rest sit idle<br />
+(wasted GEMMs); capacity (below) then <strong>drops</strong> the overflow.</p>
+</div>
+</div>
+<br />
+<p>→ <strong>Opt 6</strong> breaks the Memory Wall (fixed-capacity buffers); <strong>Opt 7</strong> attacks the Compute Wall's load imbalance.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="29" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="29" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-6--capacity-capped--static-memory-dispatch">Opt 6 — capacity-capped / static-memory dispatch</h2>
+<p>Run experts on <strong>fixed buffers</strong>: each <code>(rank, expert)</code> processes exactly <code>C</code> tokens per round.</p>
+<div style="text-align:center"><svg width="880" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Static-memory dispatch: stop sizing buffers to the router</text>
+  
+  <text x="60" y="66" font-size="14" fill="#28323b" font-weight="bold">Dropless (naive/tiled): buffer = actual count</text>
+  <line x1="60" y1="300" x2="430" y2="300" stroke="#28323b" stroke-width="1.5" />
+  <g fill="#d6ebf4" stroke="#2f7da6" stroke-width="2">
+    <rect x="80"  y="170" width="60" height="130" />
+    <rect x="170" y="245" width="60" height="55" />
+    <rect x="260" y="205" width="60" height="95" />
+    <rect x="350" y="120" width="60" height="180" />
+  </g>
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <text x="110" y="318">E0</text><text x="200" y="318">E1</text>
+    <text x="290" y="318">E2</text><text x="380" y="318">E3</text>
+  </g>
+  <text x="245" y="345" text-anchor="middle" font-size="13" fill="#c0392b">heights swing every step -&gt; fragmentation / OOM</text>
+  
+  <text x="560" y="66" font-size="14" fill="#28323b" font-weight="bold">Capacity-capped: fixed C per (rank, expert)</text>
+  <line x1="560" y1="300" x2="960" y2="300" stroke="#28323b" stroke-width="1.5" />
+  
+  <line x1="560" y1="190" x2="960" y2="190" stroke="#28323b" stroke-width="1.5" stroke-dasharray="5 4" />
+  <text x="966" y="194" font-size="12" fill="#28323b">C</text>
+  
+  <g fill="#f6e1d2" stroke="#c8682f" stroke-width="2">
+    <rect x="580" y="190" width="60" height="110" />
+    <rect x="660" y="190" width="60" height="110" />
+    <rect x="740" y="190" width="60" height="110" />
+    <rect x="820" y="190" width="60" height="110" />
+  </g>
+  
+  <g fill="#fbf1e7" stroke="#c8682f" stroke-width="1.5" stroke-dasharray="4 3">
+    <rect x="580" y="150" width="60" height="34" />
+    <rect x="820" y="120" width="60" height="64" />
+  </g>
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <text x="610" y="318">E0</text><text x="690" y="318">E1</text>
+    <text x="770" y="318">E2</text><text x="850" y="318">E3</text>
+  </g>
+  <text x="760" y="345" text-anchor="middle" font-size="13" fill="#2e7d32">fixed shape (fwd+bwd); dropless = extra capped rounds</text>
+</svg></div>
+<p><span is="marp-span" data-auto-scaling="downscale-only" class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>C</mi><mo>=</mo><mtext mathvariant="monospace">factor</mtext><mo>⋅</mo><mfrac><mrow><mtext>tokens</mtext><mo>⋅</mo><mi>k</mi></mrow><mi>E</mi></mfrac><mo separator="true">,</mo><mspace width="2em"/><mtext>send</mtext><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>E</mi><mo>×</mo><mi>C</mi><mo>×</mo><mi>d</mi></mrow></msup><mtext>  </mtext><mo>→</mo><mtext>  </mtext><mtext>reshape </mtext><mo stretchy="false">[</mo><mtext> </mtext><mi>e</mi><mi>p</mi><mo separator="true">,</mo><mtext> </mtext><mi>L</mi><mo separator="true">,</mo><mtext> </mtext><mi>C</mi><mo separator="true">,</mo><mtext> </mtext><mi>d</mi><mtext> </mtext><mo stretchy="false">]</mo><mtext>  </mtext><mo>→</mo><mtext>  </mtext><mrow><mtext mathvariant="bold">balanced</mtext><mtext> </mtext><mtext mathvariant="bold">a2a</mtext></mrow></mrow><annotation encoding="application/x-tex">C = \texttt{factor}\cdot\frac{\text{tokens}\cdot k}{E}, \qquad \text{send} \in \mathbb{R}^{E\times C\times d} \;\to\; \text{reshape } [\,ep,\, L,\, C,\, d\,] \;\to\; \textbf{balanced a2a} 
+</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6111em;"></span><span class="mord text"><span class="mord texttt">factor</span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:2.0574em;vertical-align:-0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.3714em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0576em;">E</span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord text"><span class="mord">tokens</span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal" style="margin-right:0.0315em;">k</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.686em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:2em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord text"><span class="mord">send</span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8991em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8991em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right:0.0715em;">C</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight">d</span></span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord text"><span class="mord">reshape </span></span><span class="mopen">[</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">e</span><span class="mord mathnormal">p</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">L</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">d</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mclose">]</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">→</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord text"><span class="mord textbf">balanced a2a</span></span></span></span></span></span></p><ul>
+<li><strong>capped</strong> (<code>dropless=false</code>): one round, overflow dropped (GShard / Switch).</li>
+<li><strong>static-memory dropless</strong> (default): rounds <code>r</code> process slots <code>[rC,(r+1)C)</code> until all tokens are done; round count <code>MAX</code>-reduced over EP so ranks stay in lockstep.</li>
+</ul>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="30" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="30" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-6--deep-notes-all-autograd-fixed-bwd-too">Opt 6 — deep notes (all autograd, fixed bwd too)</h2>
+<p>The fixed <code>[E, C, d]</code> buffer makes the EP exchange a <strong>perfectly balanced</strong> all-to-all of equal <code>L·C</code> blocks — and the whole path is plain autograd, so the <strong>backward also runs on fixed-capacity buffers</strong> (no custom <code>Function</code>).</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">target = expert_idx[keep] * C + slot[keep]                  <span class="hljs-comment"># fixed-capacity addressing</span>
+send   = zeros(E*C, d).index_add(<span class="hljs-number">0</span>, target, routed[keep])   <span class="hljs-comment"># scatter (differentiable)</span>
+recv   = all_to_all(send, [L*C]*ep, [L*C]*ep, group)        <span class="hljs-comment"># balanced, fixed-shape</span>
+out    = experts(recv.reshape(L, ep*C, d))                  <span class="hljs-comment"># uniform counts -&gt; grouped GEMM</span>
+contrib = all_to_all(out, ...)[target] * weights[keep]      <span class="hljs-comment"># gather + gate (differentiable)</span>
+</code></pre>
+<p><strong>Dropless + enough rounds = bit-exact with naive</strong> (<code>out_diff = 0</code>, <code>grad_diff ≤ 3e-7</code>, incl. LatentMoE; <code>tests/test_capacity_moe.py</code>).</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="31" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="31" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-7--load-balancing-the-router">Opt 7 — load balancing the router</h2>
+<p>Gate <strong>weights</strong> stay unbiased (forward never skewed). Two composable controllers:</p>
+<div style="text-align:center"><svg width="680" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Load balancing: keep every expert busy (per-expert token load)</text>
+  
+  <text x="60" y="62" font-size="14" fill="#28323b" font-weight="bold">No balancing</text>
+  <line x1="60" y1="270" x2="430" y2="270" stroke="#28323b" stroke-width="1.5" />
+  <g fill="#d6ebf4" stroke="#2f7da6" stroke-width="1.5">
+    <rect x="72"  y="230" width="28" height="40" />
+    <rect x="108" y="120" width="28" height="150" />
+    <rect x="144" y="200" width="28" height="70" />
+    <rect x="180" y="90"  width="28" height="180" />
+    <rect x="216" y="240" width="28" height="30" />
+    <rect x="252" y="150" width="28" height="120" />
+    <rect x="288" y="70"  width="28" height="200" />
+    <rect x="324" y="180" width="28" height="90" />
+  </g>
+  <text x="212" y="292" text-anchor="middle" font-size="13" fill="#c0392b">router collapses onto a few experts &nbsp; (std 1712)</text>
+  
+  <text x="560" y="62" font-size="14" fill="#28323b" font-weight="bold">Loss-free bias + aux loss</text>
+  <line x1="560" y1="270" x2="930" y2="270" stroke="#28323b" stroke-width="1.5" />
+  <g fill="#f6e1d2" stroke="#c8682f" stroke-width="1.5">
+    <rect x="572" y="168" width="28" height="102" />
+    <rect x="608" y="160" width="28" height="110" />
+    <rect x="644" y="172" width="28" height="98" />
+    <rect x="680" y="158" width="28" height="112" />
+    <rect x="716" y="166" width="28" height="104" />
+    <rect x="752" y="162" width="28" height="108" />
+    <rect x="788" y="170" width="28" height="100" />
+    <rect x="824" y="164" width="28" height="106" />
+  </g>
+  <text x="712" y="292" text-anchor="middle" font-size="13" fill="#2e7d32">time-averaged load is ~uniform &nbsp; (std 380)</text>
+  
+  <text x="500" y="324" text-anchor="middle" font-size="13" fill="#8a97a0">aux loss: alpha * sum_e f_e * P_e (grad to gate) &nbsp;|&nbsp; bias: b_e += rate * sign(mean_load - load_e) (no grad)</text>
+</svg></div>
+<div class="cols">
+<div>
+<p><strong>Aux loss</strong> (Switch / DeepSeek) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>L</mi><mtext>aux</mtext></msub><mo>=</mo><mi>α</mi><msub><mo>∑</mo><mi>e</mi></msub><msub><mi>f</mi><mi>e</mi></msub><msub><mi>P</mi><mi>e</mi></msub></mrow><annotation encoding="application/x-tex">L_\text{aux} = \alpha \sum_e f_e P_e</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">aux</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0497em;vertical-align:-0.2997em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.0017em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1076em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><br />
+differentiable → grad to the gate; <code>collect_aux_loss</code> adds it to the loss.</p>
+</div>
+<div>
+<p><strong>Loss-free bias</strong> (DeepSeek-V3) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>b</mi><mi>e</mi></msub><mo>+</mo><mo>=</mo><mi>η</mi><mtext> </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><mover accent="true"><mi>L</mi><mo>ˉ</mo></mover><mo>−</mo><msub><mi>L</mi><mi>e</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">b_e \mathrel{+}= \eta\,\mathrm{sign}(\bar{L}-L_e)</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel"><span class="mord">+</span></span></span><span class="base"><span class="strut" style="height:0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0701em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0359em;">η</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathrm">sign</span></span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8201em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">L</span></span><span style="top:-3.2523em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2222em;"><span class="mord">ˉ</span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">)</span></span></span></span><br />
+biases <strong>selection only</strong>: no grad, no tug-of-war with the LM loss.</p>
+</div>
+</div>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="32" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="32" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-6--7--the-ablation-testsablation_moepy">Opt 6 + 7 — the ablation (<code>tests/ablation_moe.py</code>)</h2>
+<div class="cols">
+<div>
+<p><strong>Capacity</strong> (<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>C</mi></mrow><annotation encoding="application/x-tex">C</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span></span></span></span> fixed at 128, <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi><mo lspace="0em" rspace="0em">=</mo><mn>2</mn></mrow><annotation encoding="application/x-tex">k{=}2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.0315em;">k</span><span class="mord"><span class="mrel">=</span></span><span class="mord">2</span></span></span></span>): imbalance makes the naive buffer grow while <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>C</mi></mrow><annotation encoding="application/x-tex">C</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.0715em;">C</span></span></span></span> stays put; dropless stays <strong>bit-exact</strong>.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align:right">skew</th>
+<th style="text-align:right">naive buf</th>
+<th style="text-align:right">capped drop</th>
+<th style="text-align:right">dropless rounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:right">0.0</td>
+<td style="text-align:right">144</td>
+<td style="text-align:right">2.6%</td>
+<td style="text-align:right">2</td>
+</tr>
+<tr>
+<td style="text-align:right">1.0</td>
+<td style="text-align:right">320</td>
+<td style="text-align:right">23.9%</td>
+<td style="text-align:right">3</td>
+</tr>
+<tr>
+<td style="text-align:right">2.0</td>
+<td style="text-align:right">459</td>
+<td style="text-align:right">47.8%</td>
+<td style="text-align:right">4</td>
+</tr>
+</tbody>
+</table>
+<p><code>factor</code> 0.5→2.0 trades buffer for drops: 50.8% → 6.2%.</p>
+</div>
+<div>
+<p><strong>Load balancing</strong> (400 steps, 8 clusters): bias revives the dead expert; aux stacks.</p>
+<table>
+<thead>
+<tr>
+<th>config</th>
+<th style="text-align:right">MaxVio</th>
+<th style="text-align:right">dead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>none</td>
+<td style="text-align:right">1.51</td>
+<td style="text-align:right">1</td>
+</tr>
+<tr>
+<td>aux</td>
+<td style="text-align:right">1.49</td>
+<td style="text-align:right">0</td>
+</tr>
+<tr>
+<td>bias</td>
+<td style="text-align:right">1.05</td>
+<td style="text-align:right">0</td>
+</tr>
+<tr>
+<td>aux+bias</td>
+<td style="text-align:right">1.05</td>
+<td style="text-align:right">0</td>
+</tr>
+</tbody>
+</table>
+<p>MaxVio = busiest / mean load (1.0 = perfect).</p>
+</div>
+</div>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="33" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="33" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="opt-6-on-gpu--static-memory-measured-4%C3%97-h100">Opt 6 on GPU — static memory, measured (4× H100)</h2>
+<p><code>bench_capacity_moe.sh</code>: one MoE layer fwd+bwd, <code>experts=16 tok/GPU=8192 hidden=4096</code>, <code>C=1024</code>. Peak CUDA memory (MAX over ranks) as routing imbalance grows:</p>
+<table>
+<thead>
+<tr>
+<th>skew</th>
+<th>max/mean</th>
+<th>uncapped peak / ms</th>
+<th>capped-drop peak / ms</th>
+<th>dropless peak / ms</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.0</td>
+<td>1.03</td>
+<td>4790 MB / 37</td>
+<td>4698 MB / 36</td>
+<td>5435 MB / 72</td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>4.15</td>
+<td><strong>9508 MB</strong> / 83</td>
+<td><strong>4698 MB</strong> / 36</td>
+<td>7046 MB / 176</td>
+</tr>
+<tr>
+<td>2.0</td>
+<td>7.10</td>
+<td><strong>13025 MB</strong> / 118</td>
+<td><strong>4698 MB</strong> / 36</td>
+<td>8657 MB / 288</td>
+</tr>
+</tbody>
+</table>
+<p>Uncapped peak <strong>swings 4.8→13 GB (2.7×)</strong> with the router — the memory wall, live. <code>capped-drop</code> is <strong>dead flat</strong> (4698 MB / 36 ms) but drops up to 60% at <code>factor=1</code>; <code>dropless</code> keeps every token and still caps far below uncapped, paying rounds in latency. At balanced load (skew 0) capacity is a slight <em>loss</em> — it's an at-scale <strong>safety/memory</strong> lever, not a free speedup.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="34" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="34" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="the-big-lesson">The big lesson</h2>
+<div class="cols">
+<div>
+<h3 id="overlap-3-paths">Overlap (3 paths)</h3>
+<p><strong>Bandwidth-bound.</strong> Pays off iff <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span> is non-trivial:</p>
+<ul>
+<li>cross-node IB/RoCE <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/></li>
+<li>large EP degree <img class="emoji" draggable="false" alt="✅" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2705.svg" data-marp-twemoji=""/></li>
+<li>single-node NVLink <img class="emoji" draggable="false" alt="❌" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/274c.svg" data-marp-twemoji=""/></li>
+</ul>
+</div>
+<div>
+<h3 id="latentmoe">LatentMoE</h3>
+<p><strong>Compute-bound win too.</strong> Cuts FLOPs, so it pays off <strong>even on NVLink</strong> (2.14×).<br />
+The one lever that doesn't need a comm bottleneck.</p>
+<h3 id="fp8-dispatch">FP8 dispatch</h3>
+<p>Comm-bound like overlap (+7% off-NVLink, slight regression on NVLink).</p>
+</div>
+</div>
+<br />
+<p>Production MoE lives in the <strong>cross-node, large-EP</strong> regime → that's the <code>NCCL_P2P_DISABLE=1</code> row, where everything here compounds.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="35" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="35" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="decision-guide">Decision guide</h2>
+<table>
+<thead>
+<tr>
+<th>Your situation</th>
+<th>Turn on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single-node NVLink, few tokens/layer</td>
+<td><code>ep_num_tiles=1</code>, <code>ep_overlap</code> ~free, skip FP8</td>
+</tr>
+<tr>
+<td>Single-node NVLink, want speed</td>
+<td><strong>LatentMoE</strong> (cuts compute)</td>
+</tr>
+<tr>
+<td>Cross-node / IB / large EP, ≳8k tok/layer</td>
+<td><strong>tiled-N</strong> (+ overlap)</td>
+</tr>
+<tr>
+<td>Hopper + want SMs back</td>
+<td><strong><code>ep_backend=&quot;deepep&quot;</code></strong></td>
+</tr>
+<tr>
+<td>Slow fabric, comm-bound</td>
+<td><strong>FP8 dispatch</strong> + LatentMoE (8× bytes)</td>
+</tr>
+<tr>
+<td>Memory swings / OOM from imbalance</td>
+<td><strong><code>ep_capacity_factor&gt;0</code></strong> (dropless = bit-exact, fixed memory)</td>
+</tr>
+<tr>
+<td>Router collapsing onto few experts</td>
+<td><strong><code>router_aux_loss_coef</code></strong> + <strong><code>router_bias_update_rate</code></strong></td>
+</tr>
+<tr>
+<td>Always</td>
+<td>leave knobs on — all auto-fallback &amp; bit-exact</td>
+</tr>
+</tbody>
+</table>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-jsonc"><span class="hljs-attr">&quot;ep_overlap&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">true</span></span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_num_tiles&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">4</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_fp8_dispatch&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-literal"><span class="hljs-keyword">false</span></span><span class="hljs-punctuation">,</span>
+<span class="hljs-attr">&quot;moe_latent_dim&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1024</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;ep_backend&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;deepep&quot;</span><span class="hljs-punctuation">,</span>
+<span class="hljs-attr">&quot;ep_capacity_factor&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1.25</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;router_aux_loss_coef&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1e-2</span><span class="hljs-punctuation">,</span> <span class="hljs-attr">&quot;router_bias_update_rate&quot;</span><span class="hljs-punctuation">:</span> <span class="hljs-number">1e-3</span>
+</code></pre>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="36" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="36" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h2 id="recap--the-optimization-ladder">Recap — the optimization ladder</h2>
+<ol>
+<li><strong>Naive</strong> a2a dispatch/combine — differentiable, reverse-a2a backward.</li>
+<li><strong>Shared-expert overlap</strong> — side stream, composes with every path.</li>
+<li><strong>Tiled pipeline</strong> — fwd ∥; backward needs <strong>explicit kernels</strong> (autograd-twice = 0.87×).</li>
+<li><strong>Megakernel</strong> — grouped GEMM; dgrad by stride-swap, dedicated wgrad.</li>
+<li><strong>DeepEP</strong> — Hopper kernels, near-zero SM, classic <code>Buffer</code>, auto-fallback.</li>
+<li><strong>FP8 dispatch</strong> — E4M3 per-token scale, straight-through BF16 backward, 2× bytes.</li>
+<li><strong>LatentMoE</strong> — route/compute in <code>l</code>, cuts comm <strong>and</strong> FLOPs, stacks to 8× with FP8.</li>
+<li><strong>Static-memory dispatch</strong> — fixed-capacity buffers; dropless rounds = bit-exact, constant memory.</li>
+<li><strong>Load balancing</strong> — aux loss + loss-free bias keep every expert busy (router quality).</li>
+</ol>
+<p><strong>Throughline:</strong> measure <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi></mrow><annotation encoding="application/x-tex">\rho</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span></span></span></span>. Hide comm where it's expensive; cut bytes/FLOPs where it isn't; then make it <strong>trainable</strong> — fixed memory, balanced experts.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="37" data-paginate="true" data-class="lead" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" class="lead" data-marpit-pagination="37" style="--paginate:true;--class:lead;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
+<h1 id="appendix">Appendix</h1>
+<h2 id="file-map--how-to-run">file map · how to run</h2>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="38" data-paginate="true" data-theme="gaia" data-style="section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+" lang="en-US" data-marpit-pagination="38" style="--paginate:true;--theme:gaia;--style:section {
+  font-size: 26px;
+  line-height: 1.35;
+}
+section.lead h1 { font-size: 50px; }
+h1 { font-size: 38px; }
+h2 { font-size: 32px; }
+pre, code { font-size: 19px; }
+table { font-size: 21px; }
+.small { font-size: 20px; }
+.muted { color: #888; }
+.cols { display: flex; gap: 1.2rem; }
+.cols &gt; div { flex: 1; }
+section img { display: block; margin: 0.2em auto; }
+section::after { font-size: 16px; }
+;" data-marpit-pagination-total="38">
 <h2 id="file-map--how-to-run-1">File map &amp; how to run</h2>
 <table>
 <thead>
@@ -1656,6 +2348,10 @@ section::after { font-size: 16px; }
 <td><code>_TiledMoEFunction</code>: tiled pipeline, fwd <strong>and</strong> bwd overlap</td>
 </tr>
 <tr>
+<td><code>capacity_moe.py</code></td>
+<td>fixed-capacity static-memory dispatch (capped + dropless rounds)</td>
+</tr>
+<tr>
 <td><code>megakernel.py</code></td>
 <td>Triton fused FFN + explicit <code>dgrad</code>/<code>wgrad</code> grouped GEMM</td>
 </tr>
@@ -1667,6 +2363,8 @@ section::after { font-size: 16px; }
 </table>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-sh"><span class="hljs-comment"># correctness (2 ranks, gloo/CPU by default; EP_TEST_BACKEND=nccl for GPU)</span>
 torchrun --nproc_per_node 2 tests/test_expert_parallel.py
+torchrun --nproc_per_node 2 tests/test_capacity_moe.py
+python tests/test_load_balance.py
 torchrun --nproc_per_node 2 tests/test_fp8_dispatch.py
 
 <span class="hljs-comment"># benchmarks (2 GPUs)</span>

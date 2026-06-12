@@ -28,7 +28,7 @@ style: |
 # Expert Parallelism, from scratch
 ## A custom `expert_parallel` module I built on top of `picotron`
 
-From a naive all-to-all to DeepEP, tiled pipelines, FP8 & LatentMoE
+From a naive all-to-all to DeepEP, tiled pipelines, FP8, LatentMoE — and what it takes to actually *train* at scale
 
 <span class="muted">extending picotron (DP·PP·CP·TP) with a 5th axis — expert parallelism — and a stack of MoE comm optimizations</span>
 <span class="muted">deep dive: autograd · CUDA streams · Triton kernels · the bandwidth lesson</span>
@@ -73,23 +73,63 @@ Design constraints I kept:
 
 ---
 
-## The challenge: a local op becomes a network round-trip
+## The challenge: sparsity breaks the dense playbook
 
-Without EP, the expert FFN is **pure local compute**. EP spreads experts across GPUs,
-so every token must be **sent to its expert and sent back** — two all-to-alls
-wrapped around the compute.
+**Dense:** every param fires every token → params and compute scale together; sharding keeps comm small.
+**MoE:** only `k` of `E` experts fire → total params grow far faster than per-token compute = a **parameter–compute mismatch**.
 
-That round-trip is what makes EP hard:
+> DeepSeek-V3: **685B** total / **37B** active = **18×** &nbsp;·&nbsp; Kimi-K2 = **31×**
 
-- **It blocks.** Experts can't start until tokens arrive; the layer can't end until results come back. The GPU sits **idle** during both all-to-alls.
-- **It gets worse at scale.** More GPUs → traffic leaves the fast NVLink island for slower links, while each GPU's share of compute shrinks. Comm starts to dominate.
-- **Backward pays it twice.** The gradient pass repeats both all-to-alls, and plain `autograd` runs them one-after-another — it won't overlap them for you.
+That asymmetry creates **three tightly-coupled walls** (NVIDIA *Megatron-Core MoE*, [arXiv:2603.07685](https://arxiv.org/abs/2603.07685)):
 
-→ So we have two levers: make the waiting **invisible** (overlap) or send **less data** (volume).
+![w:720](figures/three_walls.svg)
 
 ---
 
-## The two families of optimization
+## The Three Walls — what actually hurts
+
+<div class="cols">
+<div>
+
+### Memory
+All `E` experts' **params + grads + optimizer** stay resident, though only `k` fire. Relieving it
+just **moves the cost** (shard→BW, recompute→FLOPs, offload→PCIe). Dynamic routing → **memory spikes**.
+
+### Communication
+dispatch+combine all-to-all, `≈ T·k·h·(EP−1)/EP` each way. As EP grows it leaves NVLink for
+**inter-node links (~10× slower)**, and sparse compute leaves **little to overlap** → **20–60%** of the step.
+
+</div>
+<div>
+
+### Compute efficiency
+- **small GEMMs** from fine-grained experts → idle SMs
+- **routing/permute** ~9% of layer time
+- **load imbalance** → some experts idle
+- **host overhead**: many kernel launches; dropless dynamic shapes force host-device syncs
+
+</div>
+</div>
+
+**They're coupled** — fix one, pressure shifts: bigger batch helps GEMMs but ↑memory & comm; CUDA
+Graphs need static shapes (vs dropless); grouping helps compute but complicates balancing.
+
+---
+
+## How this talk knocks down the walls
+
+| Wall | Levers in this module |
+| --- | --- |
+| **Communication** | overlap (shared-expert · tiled · DeepEP) + volume (FP8 · LatentMoE) |
+| **Memory** | static-memory capacity dispatch (fixed buffers) |
+| **Compute** | grouped-GEMM megakernel · load balancing (aux loss + loss-free bias) |
+
+We start with the **Communication Wall** — the one EP creates — then return to **Memory** and
+**Compute** in *Beyond speed*. Throughline: **measure $\rho = t_\text{comm}/t_\text{compute}$**, then spend effort where the wall actually is.
+
+---
+
+## Knocking down the Communication Wall: two levers
 
 <div class="cols">
 <div>
@@ -422,6 +462,156 @@ Compress on H100 (fwd): latent **2.41×**, latent+fp8 2.26× — same story as A
 
 ---
 
+## Results V — EP scaling: the wall, live (8× H100)
+
+Weak scaling (4 experts/GPU, 8192 tok/GPU fixed; `num_experts = 4·ep`). `slowlink` = `NCCL_P2P_DISABLE=1` (emulates cross-node). Forward, one MoE layer:
+
+| ep | NVLink plain | slowlink plain | ρ ≈ comm/comp | slowlink best tiled |
+| --- | --- | --- | --- | --- |
+| 2 | 11.2 ms | 45.4 ms  | **3.1**  | **1.17×** |
+| 4 | 12.1 ms | 64.0 ms  | **4.3**  | **1.14×** |
+| 8 | 12.3 ms | **203.7 ms** | **15.5** | **1.16×** |
+
+Per-rank payload is **constant**, yet bandwidth-bound a2a explodes **45→204 ms** (compute flat ~12 ms) → ρ blows up **3→15**: *the communication wall*. Overlap recovers ~1.15× fwd, but at ep=8 **fwd+bwd regresses to 0.88×** — once ρ is double-digit you must **cut comm** (FP8 / LatentMoE / DeepEP), not just hide it.
+
+---
+
+<!-- _class: lead -->
+
+# Beyond speed
+## Back to the Memory & Compute walls
+
+<span class="muted">the comm wall is down — now fixed memory (Memory Wall) + balanced experts (Compute Wall): MAI / GShard / Switch / DeepSeek-V3</span>
+
+---
+
+## Why speed isn't enough
+
+The all-to-all is fast now — but two **router-driven** walls remain, and neither is about latency:
+
+<div class="cols">
+<div>
+
+### Memory Wall → memory swings
+The router decides per-expert counts **every step**. Dropless buffers track them → activation memory
+fluctuates → allocator **fragmentation & OOM** at scale.
+
+</div>
+<div>
+
+### Compute Wall → expert collapse
+A trained router with no balancing pressure piles tokens onto a **few** experts → the rest sit idle
+(wasted GEMMs); capacity (below) then **drops** the overflow.
+
+</div>
+</div>
+
+<br>
+
+→ **Opt 6** breaks the Memory Wall (fixed-capacity buffers); **Opt 7** attacks the Compute Wall's load imbalance.
+
+---
+
+## Opt 6 — capacity-capped / static-memory dispatch
+
+Run experts on **fixed buffers**: each `(rank, expert)` processes exactly `C` tokens per round.
+
+![w:880](figures/capacity_static.svg)
+
+$$ C = \texttt{factor}\cdot\frac{\text{tokens}\cdot k}{E}, \qquad \text{send} \in \mathbb{R}^{E\times C\times d} \;\to\; \text{reshape } [\,ep,\, L,\, C,\, d\,] \;\to\; \textbf{balanced a2a} $$
+
+- **capped** (`dropless=false`): one round, overflow dropped (GShard / Switch).
+- **static-memory dropless** (default): rounds `r` process slots `[rC,(r+1)C)` until all tokens are done; round count `MAX`-reduced over EP so ranks stay in lockstep.
+
+---
+
+## Opt 6 — deep notes (all autograd, fixed bwd too)
+
+The fixed `[E, C, d]` buffer makes the EP exchange a **perfectly balanced** all-to-all of equal `L·C` blocks — and the whole path is plain autograd, so the **backward also runs on fixed-capacity buffers** (no custom `Function`).
+
+```python
+target = expert_idx[keep] * C + slot[keep]                  # fixed-capacity addressing
+send   = zeros(E*C, d).index_add(0, target, routed[keep])   # scatter (differentiable)
+recv   = all_to_all(send, [L*C]*ep, [L*C]*ep, group)        # balanced, fixed-shape
+out    = experts(recv.reshape(L, ep*C, d))                  # uniform counts -> grouped GEMM
+contrib = all_to_all(out, ...)[target] * weights[keep]      # gather + gate (differentiable)
+```
+
+**Dropless + enough rounds = bit-exact with naive** (`out_diff = 0`, `grad_diff ≤ 3e-7`, incl. LatentMoE; `tests/test_capacity_moe.py`).
+
+---
+
+## Opt 7 — load balancing the router
+
+Gate **weights** stay unbiased (forward never skewed). Two composable controllers:
+
+![w:680](figures/load_balance.svg)
+
+<div class="cols">
+<div>
+
+**Aux loss** (Switch / DeepSeek) — $L_\text{aux} = \alpha \sum_e f_e P_e$
+differentiable → grad to the gate; `collect_aux_loss` adds it to the loss.
+
+</div>
+<div>
+
+**Loss-free bias** (DeepSeek-V3) — $b_e \mathrel{+}= \eta\,\mathrm{sign}(\bar{L}-L_e)$
+biases **selection only**: no grad, no tug-of-war with the LM loss.
+
+</div>
+</div>
+
+---
+
+## Opt 6 + 7 — the ablation (`tests/ablation_moe.py`)
+
+<div class="cols">
+<div>
+
+**Capacity** ($C$ fixed at 128, $k{=}2$): imbalance makes the naive buffer grow while $C$ stays put; dropless stays **bit-exact**.
+
+| skew | naive buf | capped drop | dropless rounds |
+|---:|---:|---:|---:|
+| 0.0 | 144 | 2.6% | 2 |
+| 1.0 | 320 | 23.9% | 3 |
+| 2.0 | 459 | 47.8% | 4 |
+
+`factor` 0.5→2.0 trades buffer for drops: 50.8% → 6.2%.
+
+</div>
+<div>
+
+**Load balancing** (400 steps, 8 clusters): bias revives the dead expert; aux stacks.
+
+| config | MaxVio | dead |
+|---|---:|---:|
+| none | 1.51 | 1 |
+| aux | 1.49 | 0 |
+| bias | 1.05 | 0 |
+| aux+bias | 1.05 | 0 |
+
+MaxVio = busiest / mean load (1.0 = perfect).
+
+</div>
+</div>
+
+---
+
+## Opt 6 on GPU — static memory, measured (4× H100)
+
+`bench_capacity_moe.sh`: one MoE layer fwd+bwd, `experts=16 tok/GPU=8192 hidden=4096`, `C=1024`. Peak CUDA memory (MAX over ranks) as routing imbalance grows:
+
+| skew | max/mean | uncapped peak / ms | capped-drop peak / ms | dropless peak / ms |
+| --- | --- | --- | --- | --- |
+| 0.0 | 1.03 | 4790 MB / 37 | 4698 MB / 36 | 5435 MB / 72 |
+| 1.0 | 4.15 | **9508 MB** / 83 | **4698 MB** / 36 | 7046 MB / 176 |
+| 2.0 | 7.10 | **13025 MB** / 118 | **4698 MB** / 36 | 8657 MB / 288 |
+
+Uncapped peak **swings 4.8→13 GB (2.7×)** with the router — the memory wall, live. `capped-drop` is **dead flat** (4698 MB / 36 ms) but drops up to 60% at `factor=1`; `dropless` keeps every token and still caps far below uncapped, paying rounds in latency. At balanced load (skew 0) capacity is a slight *loss* — it's an at-scale **safety/memory** lever, not a free speedup.
+
+---
+
 ## The big lesson
 
 <div class="cols">
@@ -461,11 +651,14 @@ Production MoE lives in the **cross-node, large-EP** regime → that's the `NCCL
 | Cross-node / IB / large EP, ≳8k tok/layer | **tiled-N** (+ overlap) |
 | Hopper + want SMs back | **`ep_backend="deepep"`** |
 | Slow fabric, comm-bound | **FP8 dispatch** + LatentMoE (8× bytes) |
+| Memory swings / OOM from imbalance | **`ep_capacity_factor>0`** (dropless = bit-exact, fixed memory) |
+| Router collapsing onto few experts | **`router_aux_loss_coef`** + **`router_bias_update_rate`** |
 | Always | leave knobs on — all auto-fallback & bit-exact |
 
 ```jsonc
 "ep_overlap": true, "ep_num_tiles": 4, "ep_fp8_dispatch": false,
-"moe_latent_dim": 1024, "ep_backend": "deepep"
+"moe_latent_dim": 1024, "ep_backend": "deepep",
+"ep_capacity_factor": 1.25, "router_aux_loss_coef": 1e-2, "router_bias_update_rate": 1e-3
 ```
 
 ---
@@ -479,8 +672,10 @@ Production MoE lives in the **cross-node, large-EP** regime → that's the `NCCL
 5. **DeepEP** — Hopper kernels, near-zero SM, classic `Buffer`, auto-fallback.
 6. **FP8 dispatch** — E4M3 per-token scale, straight-through BF16 backward, 2× bytes.
 7. **LatentMoE** — route/compute in `l`, cuts comm **and** FLOPs, stacks to 8× with FP8.
+8. **Static-memory dispatch** — fixed-capacity buffers; dropless rounds = bit-exact, constant memory.
+9. **Load balancing** — aux loss + loss-free bias keep every expert busy (router quality).
 
-**Throughline:** measure $\rho$. Hide comm where it's expensive; cut bytes/FLOPs where it isn't.
+**Throughline:** measure $\rho$. Hide comm where it's expensive; cut bytes/FLOPs where it isn't; then make it **trainable** — fixed memory, balanced experts.
 
 ---
 
@@ -498,12 +693,15 @@ Production MoE lives in the **cross-node, large-EP** regime → that's the `NCCL
 | `expert_parallel.py` | `MoELayer`: router, sharded experts, path selection, FP8 + LatentMoE |
 | `ep_communications.py` | differentiable / async / **FP8** all-to-all primitives |
 | `tiled_moe.py` | `_TiledMoEFunction`: tiled pipeline, fwd **and** bwd overlap |
+| `capacity_moe.py` | fixed-capacity static-memory dispatch (capped + dropless rounds) |
 | `megakernel.py` | Triton fused FFN + explicit `dgrad`/`wgrad` grouped GEMM |
 | `deepep_backend.py` | DeepEP dispatch/combine (Hopper, auto-fallback) |
 
 ```sh
 # correctness (2 ranks, gloo/CPU by default; EP_TEST_BACKEND=nccl for GPU)
 torchrun --nproc_per_node 2 tests/test_expert_parallel.py
+torchrun --nproc_per_node 2 tests/test_capacity_moe.py
+python tests/test_load_balance.py
 torchrun --nproc_per_node 2 tests/test_fp8_dispatch.py
 
 # benchmarks (2 GPUs)

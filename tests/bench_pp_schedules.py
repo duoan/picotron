@@ -7,10 +7,6 @@ so the theory and the wall clock line up.
 
 Directly comparable (each sweeps ``m = grad_acc_steps`` micro-batches once through the full model):
     afab, 1f1b, zb (Zero-Bubble), interleaved (virtual pipeline).
-Reported separately: dualpipe splits the same ``m`` micro-batches into two opposing streams (m/2 each)
-and runs them concurrently, each rank holding the two stages symmetric about the middle. It processes
-the same total tokens as the others, but with ~2x the resident parameters/activations; we report it on
-its own row because its compute-only lower bound differs (two replicated stages, not one).
 
 Metrics reported per schedule:
     step ms       : measured wall-clock of one full train_step (slowest stage, MAX-reduced).
@@ -96,14 +92,12 @@ def bubble_fraction(engine, p, m, v):
         return (p - 1) / (m * v)  # virtual pipeline shrinks the bubble by v
     if engine == "zb":
         return 0.0  # ideal: W work fills the bubble (real ~ small, bounded by warmup)
-    if engine == "dualpipe":
-        return (p - 1) / (2 * m)  # halved by the two opposing streams (when overlapped)
     return float("nan")
 
 
 def build_stage(engine, cfg, device, dtype, num_virtual_stages):
     from picotron.pipeline_parallel.pipeline_parallel import PipelineParallel
-    from picotron.pipeline_parallel.pp_schedules import DualPipeParallel, InterleavedPipelineParallel
+    from picotron.pipeline_parallel.pp_schedules import InterleavedPipelineParallel
 
     torch.manual_seed(0)
     from picotron.model import Llama
@@ -112,8 +106,6 @@ def build_stage(engine, cfg, device, dtype, num_virtual_stages):
     model.reset_parameters()
     if engine == "interleaved":
         stage = InterleavedPipelineParallel(model, cfg, num_virtual_stages=num_virtual_stages)
-    elif engine == "dualpipe":
-        stage = DualPipeParallel(model, cfg)
     else:
         stage = PipelineParallel(model, cfg)
     return stage.to(dtype).to(device)
@@ -125,7 +117,6 @@ def schedule_fn(engine):
         train_step_pipeline_afab,
     )
     from picotron.pipeline_parallel.pp_schedules import (
-        train_step_pipeline_dualpipe,
         train_step_pipeline_interleaved,
         train_step_pipeline_zb,
     )
@@ -135,13 +126,10 @@ def schedule_fn(engine):
         "1f1b": train_step_pipeline_1f1b,
         "zb": train_step_pipeline_zb,
         "interleaved": train_step_pipeline_interleaved,
-        "dualpipe": train_step_pipeline_dualpipe,
     }[engine]
 
 
 def time_engine(engine, cfg, dl, device, dtype, num_virtual_stages, iters, warmup):
-    from picotron.pipeline_parallel.pp_schedules import dualpipe_reduce_grads
-
     stage = build_stage(engine, cfg, device, dtype, num_virtual_stages)
     fn = schedule_fn(engine)
     shapes = (dl.micro_batch_size, dl.seq_length_per_gpu, cfg.hidden_size)
@@ -151,8 +139,6 @@ def time_engine(engine, cfg, dl, device, dtype, num_virtual_stages, iters, warmu
             p_.grad = None
         dl.reset()
         fn(stage, dl, shapes, device, dtype)
-        if engine == "dualpipe":
-            dualpipe_reduce_grads(stage, device=device, dtype=dtype)
 
     for _ in range(warmup):
         one_step()
@@ -282,7 +268,6 @@ def main():
     ideal_ms = compute_only_ms(cfg, dl, device, dtype, args.iters, args.warmup)
     comparable = ["afab", "1f1b", "zb", "interleaved"]
     results = {e: time_engine(e, cfg, dl, device, dtype, v, args.iters, args.warmup) for e in comparable}
-    dp_ms, dp_mem = time_engine("dualpipe", cfg, dl, device, dtype, v, args.iters, args.warmup)
 
     if rank == 0:
 
@@ -308,15 +293,11 @@ def main():
             ms, mem = results[e]
             row(e, ms, mem, bubble_fraction(e, p, m, v))
         print("-" * 75)
-        row("dualpipe*", dp_ms, dp_mem, bubble_fraction("dualpipe", p, m, v))
         print(
             "\nbubble(emp) = 1 - compute_only/step (measured); bubble(ana) = analytical (p-1)/m, "
             "(p-1)/(m*v), ...\n"
-            "* dualpipe overlaps two opposing streams (m/2 each) on separate communicators so one's\n"
-            "  forwards fill the other's backward bubble; it processes the same m tokens but holds ~2x\n"
-            "  params/activations. bubble(emp) uses the 1f1b single-stage compute baseline, so it is only\n"
-            "  indicative for dualpipe (it runs two replicated stages). zb does a true ~1x B/W split\n"
-            "  (deferred per-Linear weight grads). peak MB is 0 on CPU (CUDA-only).\n"
+            "zb does a true ~1x B/W split (deferred per-Linear weight grads). peak MB is 0 on CPU "
+            "(CUDA-only).\n"
         )
 
     dist.barrier()

@@ -10,13 +10,15 @@ EP is the 5th axis of parallelism (the grid is `DP × PP × CP × EP × TP`). It
 others: non-expert weights are replicated and their grads sync over the `cp_dp` group, while expert
 weights are sharded across EP and not all-reduced.
 
-This module keeps the picotron spirit — readable `torch.distributed` collectives — while adding two
+This module keeps the picotron spirit — readable `torch.distributed` collectives — while adding three
 families of MoE-systems optimization:
 - **overlap** (hide the all-to-all behind compute): [DeepEP](https://github.com/deepseek-ai/DeepEP),
   [MegaScale-MoE](https://arxiv.org/abs/2505.11432), [UniEP](https://arxiv.org/abs/2604.19241)
 - **comm-volume reduction** (send fewer bytes): FP8 dispatch
   ([DeepEP](https://github.com/deepseek-ai/DeepEP)) and LatentMoE
   ([NVIDIA Nemotron](https://research.nvidia.com/labs/nemotron/LatentMoE/))
+- **train at scale** (fixed memory + balanced experts): capacity-capped / static-memory dispatch
+  (GShard / Switch / MAI) and router load balancing (aux loss + DeepSeek-V3 loss-free bias)
 
 ## Files
 
@@ -25,19 +27,25 @@ families of MoE-systems optimization:
 | `expert_parallel.py` | `MoELayer`: router, sharded experts, dispatch/combine, path selection, FP8 + LatentMoE |
 | `ep_communications.py` | differentiable + async + **FP8** all-to-all primitives (`all_to_all`, `all_to_all_async`, `all_to_all_fp8`, ...) |
 | `tiled_moe.py` | `_TiledMoEFunction`: the MegaScale-style token-tiled pipeline (fwd **and** bwd overlap) |
+| `capacity_moe.py` | fixed-capacity static-memory dispatch (capacity-capped + dropless multi-round rounds) |
 | `megakernel.py` | Triton fused expert FFN (forward) + explicit `dgrad`/`wgrad` grouped-GEMM (backward) |
 | `deepep_backend.py` | optional [DeepEP](https://github.com/deepseek-ai/DeepEP) dispatch/combine backend (Hopper SM90+, auto-fallback) |
 
 ## Execution paths
 
-`MoELayer.forward` picks one of three numerically-identical **routed** paths (see
-`tests/test_expert_parallel.py`):
+`MoELayer.forward` picks one **routed** path (see `tests/test_expert_parallel.py`,
+`tests/test_capacity_moe.py`):
 
 - **naive** — blocking `dispatch -> experts -> combine`.
 - **tiled-N** — MegaScale-style token-tiled pipeline: split routed tokens into `N` tiles and
   pipeline dispatch / expert GEMM / combine across them. Enabled by `ep_num_tiles > 1`.
+- **capped** — fixed-capacity static-memory dispatch (enabled by `ep_capacity_factor > 0`). See
+  [Static memory & load balancing](#static-memory--load-balancing-training-at-scale).
 - **deepep** — DeepEP's CUDA dispatch/combine kernels (Hopper SM90+). Enabled by
   `ep_backend="deepep"`; auto-falls back to naive when unavailable.
+
+The naive / tiled / deepep paths and the **dropless** capped path are numerically identical; the
+capacity-*capped* path (drop mode) intentionally differs because it drops overflow tokens.
 
 **Shared-expert overlap is orthogonal**, not a separate path. The shared expert (DeepSeek-style) is
 comm-free local compute, so `ep_overlap=True` runs it on a side CUDA stream that overlaps the
@@ -56,7 +64,12 @@ Config knobs (`create_config.py` → config → `train.py` → `model_config`):
     "ep_num_tiles": 4,        // 1 = off; >1 enables the tiled pipeline
     "ep_fp8_dispatch": false, // FP8 (E4M3) dispatch  -> ~2x fewer dispatch bytes
     "moe_latent_dim": 0,      // LatentMoE latent dim l (0/>=hidden = off) -> route/compute in l
-    "ep_backend": "torch"     // "torch" (portable) | "deepep" (Hopper SM90+, auto-fallback)
+    "ep_backend": "torch",    // "torch" (portable) | "deepep" (Hopper SM90+, auto-fallback)
+    "ep_capacity_factor": 0,  // 0 = dropless variable-size; >0 = fixed-capacity static memory
+    "ep_capacity_dropless": true, // capacity mode: true = dropless rounds, false = drop overflow
+    "ep_max_rounds": 8,       // cap on dropless capacity rounds
+    "router_aux_loss_coef": 0,    // load-balance aux loss coefficient (0 = off)
+    "router_bias_update_rate": 0  // DeepSeek-V3 loss-free bias update rate (0 = off)
 }
 ```
 
@@ -233,6 +246,43 @@ tiled-2 1.03×, tiled-4 0.97×.
 | latent | 2048 | 4.0× | 4.72 ms | **2.41×** |
 | latent + fp8 | 1028 | **8.0×** | 5.04 ms | 2.26× |
 
+### EP-degree scaling on 8× H100 — the communication wall, live (`tests/bench_ep_scaling.sh`)
+
+A *weak-scaling* sweep: per-GPU work is held fixed (4 experts/GPU, 8192 tokens/GPU, `hidden=4096
+inter=4096 topk=2 shared=1`) and only the EP degree grows, so `num_experts = 4·ep`. Each point is timed
+on the intra-node NVLink fabric and again with `NCCL_P2P_DISABLE=1`, which forces dispatch/combine off
+NVLink to emulate the bandwidth-starved **cross-node** regime production MoE lives in. Run on **8× H100
+via Modal** (`MODAL_GPU=H100:8 modal run --detach modal_run.py --command "bash tests/bench_ep_scaling.sh '2 4 8'"`).
+
+Forward, one MoE layer (`plain` ms; best `tiled` speedup over plain):
+
+| ep | experts | NVLink plain | slowlink plain | ρ ≈ (slow−nv)/nv | NVLink best tiled | slowlink best tiled |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | 8  | 11.2 ms | 45.4 ms  | **3.1**  | 1.01× | **1.17×** (tiled-2) |
+| 4 | 16 | 12.1 ms | 64.0 ms  | **4.3**  | 1.06× | **1.14×** (tiled-2) |
+| 8 | 32 | 12.3 ms | 203.7 ms | **15.5** | 1.06× | **1.16×** (tiled-4) |
+
+The headline is the `slowlink plain` column: the per-rank payload is **constant** under weak scaling,
+yet the bandwidth-bound all-to-all latency explodes **45 → 64 → 204 ms** as the degree goes 2 → 4 → 8
+(an 8-way all-to-all over a slow fabric serializes far worse than a 2-way one), while compute stays
+flat (~12 ms on NVLink). So the comm/compute ratio ρ blows up **3 → 15** — *this is the communication
+wall*. On NVLink, ρ stays ≈ 0 and overlap is a no-op (≤ 1.06×), exactly as the L4/A100 sections found.
+
+Forward overlap recovers ~1.1–1.17× in the slowlink regime, but it cannot hide an all-to-all that is
+**15× the compute** — and fwd+bwd at ep=8 actually *regresses* (best tiled **0.88×**) because the extra
+tiled-backward collectives add contention once comm utterly dominates:
+
+| ep | NVLink fwd+bwd best tiled | slowlink fwd+bwd best tiled |
+| --- | --- | --- |
+| 2 | 1.00× | 1.08× |
+| 4 | 1.04× | 1.04× |
+| 8 | 1.03× | **0.88× (regress)** |
+
+Takeaway: stream-level overlap is the right tool while ρ is *moderate*; once the EP degree pushes ρ
+into the double digits, hiding comm is no longer enough and you must **cut the comm itself** — FP8 /
+LatentMoE volume reduction (above) and DeepEP's SM-free kernels — which is exactly the regime those
+optimizations target.
+
 ## Reducing communication *volume* (orthogonal to overlap)
 
 Overlap *hides* the all-to-all; these two reduce the *bytes* sent, so they help even when there is no
@@ -278,6 +328,128 @@ Takeaways:
 - They **stack**: latent + fp8 = 8× fewer dispatch bytes; in the bandwidth-bound regime that compounds
   to 2.86×, and overlap can hide whatever comm remains on top.
 
+## Static memory & load balancing (training at scale)
+
+The overlap / comm-volume sections above make EP *fast*. These two make it *trainable at scale* — the
+ideas the [MAI](https://microsoft.ai/pdf/mai-thinking-1.pdf) MoE report (and GShard / Switch /
+DeepSeek-V3 before it) lean on. Both are off by default and bit-exact no-ops when disabled.
+
+### Capacity-capped / static-memory dispatch (`ep_capacity_factor > 0`)
+
+The dropless paths size every buffer to the *actual* per-expert token counts, which swing every step
+with the router. Under load imbalance that means fluctuating activation memory, allocator
+fragmentation, and OOM risk at scale. The capacity path instead runs the experts on **fixed-capacity
+buffers**: each `(rank, expert)` processes exactly `capacity = ep_capacity_factor · (tokens · k /
+num_experts)` tokens per round, so *every* activation — forward and backward — has a constant,
+predictable shape (`capacity_moe.py`). Two modes:
+
+- **capacity-capped** (`ep_capacity_dropless=false`): one round; tokens beyond `capacity` for an
+  expert are **dropped** (classic GShard / Switch). Constant memory, some tokens skip the MoE.
+- **static-memory dropless** (`ep_capacity_dropless=true`, default): multiple capped rounds — round
+  `r` processes an expert's tokens `[r·C, (r+1)·C)` — looped until **all** tokens are processed (or
+  `ep_max_rounds`). No drops, yet each round's memory is still fixed. The round count is reduced with
+  a MAX over the EP group so all ranks issue the same collectives.
+
+The whole path is plain autograd (a differentiable equal-split all-to-all + `index_add` scatter), so
+the backward also runs on fixed-capacity buffers — no custom backward. The fixed `[num_experts, C, d]`
+buffer reshapes to `[ep, local_E, C, d]`, making the EP exchange a perfectly balanced all-to-all of
+equal `local_E·C` blocks. Dropless-with-enough-rounds is **bit-exact** with the naive path
+(`tests/test_capacity_moe.py`, `out_diff = 0`, `grad_diff ≤ 3e-7` on 1–2 ranks, incl. LatentMoE).
+
+### Router load balancing (`router_aux_loss_coef`, `router_bias_update_rate`)
+
+A trained router collapses onto a few experts without a balancing pressure. Two composable
+strategies (both feed off the per-expert token counts; the router's *gate weights* always stay
+unbiased so the forward is never skewed):
+
+- **Aux loss** (Switch / GShard / DeepSeek): `L_aux = α · Σ_e f_e · P_e`, where `f_e` is the
+  (scaled) fraction of token-assignments to expert `e` and `P_e` its mean router probability. It is a
+  *differentiable* scalar stashed on each `MoELayer`; `collect_aux_loss(model)` sums and drains them
+  and `train.py` adds the result to the cross-entropy before `backward()`. Enabled by
+  `router_aux_loss_coef > 0` (e.g. `1e-2`).
+- **Loss-free bias** (DeepSeek-V3): a per-expert bias added to the router scores **for selection
+  only**. It carries no gradient; a sign controller nudges it each step — `bias += rate · sign(mean_load
+  − load_e)` (load summed over the EP group) — raising under-used experts and lowering over-used ones.
+  Enabled by `router_bias_update_rate > 0` (e.g. `1e-3`). No extra loss term, so no tug-of-war with
+  the language-model objective.
+
+`tests/test_load_balance.py` checks the aux loss is a positive scalar that backprops into the gate,
+and that the loss-free controller moves the bias the right way and **cuts the time-averaged load
+imbalance ~4.5×** (std 1712 → 380 on a fixed batch) versus no balancing.
+
+### Ablations (`tests/ablation_moe.py`)
+
+A portable (gloo/CPU) ablation isolating each knob. It is a *behaviour* study — token drops, round
+count, buffer determinism, load imbalance — not wall-clock (timing lives in the GPU `bench_ep_*`
+scripts above). Numbers below are from `python tests/ablation_moe.py` (identical at `ep=2`,
+`E=8`, `top_k=2`, `512` tokens/rank).
+
+**Capacity dispatch — vary routing imbalance (`capacity_factor = 1.0`).** A Zipf router (`skew`)
+concentrates tokens on a few experts. The capacity buffer `C` stays **fixed** while the dropless
+naive buffer must grow to the worst-case per-expert count; capacity-capped trades drops for that fixed
+budget, dropless trades extra rounds, and dropless stays **bit-exact** with naive throughout.
+
+| skew | max/mean load | capacity `C` | naive worst-buf | capped drop% | dropless rounds | dropless == naive |
+|-----:|--------------:|-------------:|----------------:|-------------:|----------------:|:-----------------:|
+| 0.0  | 1.12 | 128 | 144 | 2.6%  | 2 | 0 |
+| 0.5  | 1.71 | 128 | 219 | 12.2% | 2 | 0 |
+| 1.0  | 2.50 | 128 | 320 | 23.9% | 3 | 0 |
+| 1.5  | 3.19 | 128 | 408 | 37.9% | 4 | 0 |
+| 2.0  | 3.59 | 128 | 459 | 47.8% | 4 | 0 |
+
+**Capacity dispatch — vary `capacity_factor` (fixed `skew = 1.0`).** Higher capacity → fewer dropped
+tokens (capped) and fewer rounds (dropless), at a larger fixed buffer. `factor ≈ 1.25` already drops
+the dropless cost to 2 rounds.
+
+| `capacity_factor` | capacity `C` | capped drop% | dropless rounds |
+|------------------:|-------------:|-------------:|----------------:|
+| 0.50 | 64  | 50.8% | 5 |
+| 1.00 | 128 | 23.9% | 3 |
+| 1.25 | 160 | 17.3% | 2 |
+| 2.00 | 256 | 6.2%  | 2 |
+
+**Capacity vs uncapped on GPU — peak memory under imbalance (`tests/bench_capacity_moe.sh`).** The CPU
+tables above show *behaviour*; this is the payoff that only shows on a GPU. Run on **4× H100 via Modal**
+(`MODAL_GPU=H100:4 modal run --detach modal_run.py --command "bash tests/bench_capacity_moe.sh"`),
+`experts=16 tokens/GPU=8192 hidden=4096 inter=4096 factor=1.0` (`C=1024`), fwd+bwd of one MoE layer.
+Each (skew, path) runs in its own `timeout`-bounded process because the uncapped path can stall an
+all-to-all by piling the hot experts onto one rank — *the very memory-wall pathology capacity prevents*.
+
+| skew | max/mean | uncapped peak / ms | capped-drop peak / ms (drop%) | capped-dropless peak / ms (rounds) |
+|-----:|---------:|-------------------:|------------------------------:|-----------------------------------:|
+| 0.0 | 1.03 | 4790 MB / 36.6 ms | 4698 MB / 36.2 ms (0.9%) | 5435 MB / 71.6 ms (2) |
+| 1.0 | 4.15 | **9508 MB** / 82.9 ms | **4698 MB** / 35.8 ms (34%) | 7046 MB / 176 ms (5) |
+| 2.0 | 7.10 | **13025 MB** / 117.9 ms | **4698 MB** / 36.0 ms (60%) | 8657 MB / 287.7 ms (8) |
+
+Takeaways:
+
+- **Uncapped peak memory swings with the router: 4.8 → 13.0 GB (2.7×)** as imbalance grows, and latency
+  balloons 37 → 118 ms (one expert gets a giant GEMM). This is the memory wall, measured.
+- **`capped-drop` is dead flat — 4698 MB and ~36 ms at every skew** (static memory + static compute),
+  at the cost of dropped tokens (0.9% → 60% at `factor=1.0`; raise the factor or use dropless to recover them).
+- **`capped-dropless` drops nothing and still caps peak far below uncapped (8.7 vs 13.0 GB)**, paying the
+  saved memory back as round latency (2 → 8 rounds).
+- **At balanced load (skew 0) capacity is a slight *loss*** (overhead, no swing to tame): it is an
+  at-scale *safety/memory* lever, not a free speedup — turn it on for imbalance-prone or OOM-prone runs.
+
+**Load balancing — small clustered-input training task (400 steps, 8 input clusters).** `MaxVio` is
+the busiest expert's load over the mean (1.0 = perfect). The loss-free bias is the strongest lever
+(revives the dead expert, MaxVio 1.51 → 1.05); the aux loss helps and stacks; both also nudge task
+MSE down here.
+
+| config   | task MSE | MaxVio (max/mean) | dead experts |
+|----------|---------:|------------------:|-------------:|
+| none     | 0.0333 | 1.51 | 1 |
+| aux      | 0.0297 | 1.49 | 0 |
+| bias     | 0.0266 | 1.05 | 0 |
+| aux+bias | 0.0256 | 1.05 | 0 |
+
+```sh
+python tests/ablation_moe.py                       # both ablations, ep=1 (gloo/CPU, behaviour)
+torchrun --nproc_per_node 2 tests/ablation_moe.py  # capacity correctness across ranks
+bash tests/bench_capacity_moe.sh                   # GPU: capacity vs uncapped peak-memory sweep
+```
+
 ## Correctness
 
 - `tests/test_megakernel.py` — Triton forward + **explicit backward** vs autograd reference
@@ -286,10 +458,16 @@ Takeaways:
   baseline (`grad_diff ≤ 5e-7`), **LatentMoE** paths agree, and full `Llama` integration. Runs on
   gloo/CPU by default; set `EP_TEST_BACKEND=nccl` for the GPU path.
 - `tests/test_fp8_dispatch.py` — FP8 dispatch vs BF16 within quant tolerance + byte reduction (CUDA/NCCL).
+- `tests/test_capacity_moe.py` — static-memory **dropless == naive** (bit-exact, incl. LatentMoE),
+  capacity-capped drops & stays finite; runs on gloo/CPU at 1 and 2 ranks.
+- `tests/test_load_balance.py` — aux loss is a positive scalar with grad to the gate; loss-free bias
+  moves correctly and cuts time-averaged load imbalance.
 
 ```sh
 # correctness (2 ranks)
 torchrun --nproc_per_node 2 tests/test_expert_parallel.py
+torchrun --nproc_per_node 2 tests/test_capacity_moe.py
+python tests/test_load_balance.py
 python tests/test_megakernel.py                       # GPU
 torchrun --nproc_per_node 2 tests/test_fp8_dispatch.py  # GPU/NCCL
 

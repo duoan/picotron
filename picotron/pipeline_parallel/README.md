@@ -1,14 +1,14 @@
 # Pipeline Parallelism in picotron
 
 A from-scratch guide to pipeline parallelism (PP): **why** it exists, how the naive version wastes the
-cluster, how micro-batching and **1F1B** fix it, and then the three modern schedules
-(**Zero-Bubble**, **Interleaved 1F1B**, **DualPipe**) that attack the leftover pipeline *bubble*.
+cluster, how micro-batching and **1F1B** fix it, and then the two modern schedules
+(**Zero-Bubble**, **Interleaved 1F1B**) that attack the leftover pipeline *bubble*.
 
 Everything here is implemented and gradient-validated on the gloo/CPU test harness, so you can read the
 code, run the tests, and reproduce the benchmarks without a GPU cluster.
 
 - Built-in schedules: `pipeline_parallel.py` — `train_step_pipeline_afab`, `train_step_pipeline_1f1b`
-- Advanced schedules: `pp_schedules.py` — `train_step_pipeline_zb` / `_interleaved` / `_dualpipe`
+- Advanced schedules: `pp_schedules.py` — `train_step_pipeline_zb` / `train_step_pipeline_interleaved`
 - Communication primitives: `pp_communications.py`
 - Tests / benchmark: `tests/test_pipeline_parallel.py`, `tests/bench_pp_schedules.py`
 - Slides: `teaching_slides.md` (`./render_slides.sh`)
@@ -97,16 +97,15 @@ picotron's default (`train_step_pipeline_1f1b`) and the foundation everything be
 
 ---
 
-## 5. Shrinking the bubble — three modern schedules
+## 5. Shrinking the bubble — two modern schedules
 
-`pp_schedules.py` adds three schedules from the last two years of PP research, each trading a different
+`pp_schedules.py` adds two schedules from the last two years of PP research, each trading a different
 resource to shrink the `(p-1)/m` bubble:
 
 | schedule | source | bubble | trades | wrapper + entry point |
 |---|---|---|---|---|
 | **Zero-Bubble (ZB-H1)** | Qi et al., ICLR 2024 ([2401.10241](https://arxiv.org/abs/2401.10241)) | `≈ 0` | extra activation memory for the W queue (~1× backward FLOPs) | `PipelineParallel` + `train_step_pipeline_zb` |
 | **Interleaved 1F1B** | Narayanan et al., Megatron-LM ([2104.04473](https://arxiv.org/abs/2104.04473)) | `(p-1)/(m·v)` | `v`× more comm, needs `m % p == 0` | `InterleavedPipelineParallel` + `train_step_pipeline_interleaved` |
-| **DualPipe** | DeepSeek-V3 ([2412.19437](https://arxiv.org/abs/2412.19437)) | `(p-1)/(2m)` overlapped | ~2× parameter memory | `DualPipeParallel` + `train_step_pipeline_dualpipe` (concurrent two-stream driver) |
 
 `p` = pipeline stages, `m` = micro-batches per step, `v` = virtual stages per rank.
 
@@ -134,40 +133,24 @@ Give each rank `v` **non-contiguous** chunks. With `G = p·v` virtual stages lai
 triangles are `v`× thinner → bubble `(p-1)/(m·v)`. Cost: `v`× more cross-rank activation hops, and it
 requires `m % p == 0`.
 
-### Lever 3 — DualPipe (bidirectional pipeline)
+### Beyond these two — DualPipe (intentionally omitted)
 
-![dualpipe](figures/dualpipe.svg)
-
-Run **two micro-batch streams in opposite directions**. Each rank holds the two stages symmetric about
-the middle (stage `r` and stage `p-1-r`), so a stage is replicated across the pair `(r, p-1-r)` and
-their gradients are summed (`dualpipe_reduce_grads`). The two streams each carry `m/2` micro-batches, so
-together they reproduce the full `m`-micro-batch gradient bit-exactly.
-
-The two streams run **concurrently in time** so one's forwards fill the other's backward bubbles. Each
-stream is a Python generator (`_dualpipe_stream`) that yields its batched P2P at every comm point, and a
-backend-aware driver (`_drive_dualpipe`) interleaves them on **independent communicators** (one PP
-subgroup per direction, so their sends/recvs never alias):
-
-- **NCCL/GPU** — a single-threaded completion-polling driver (`_drive_dualpipe_async`) launches both
-  streams' P2P asynchronously and resumes a stream only once its outstanding `Work.is_completed()`.
-  Because NCCL comm runs on its own CUDA stream, one direction's communication overlaps the other's
-  compute on-device. (A naive multi-threaded driver deadlocks here — NCCL is not thread-safe for
-  concurrent P2P from multiple Python threads on one device.)
-- **gloo/CPU** — a thread-per-stream driver (`_drive_dualpipe_threads`) blocks each stream on its own
-  communicator; gloo releases the GIL inside `wait()`, so the two threads make progress independently.
-
-This is bit-exact on **both** backends at `p = 2/4/8`. What's *not* here is DeepSeek's intra-chunk
-SM-level overlap (splitting one layer's attention/MLP/dispatch kernels and partitioning SMs between the
-comm and compute kernels). That requires custom kernels and changes only the per-chunk overlap
-constant, not the schedule's correctness or its `≈ (p-1)/(2m)` bubble.
+DeepSeek-V3's **DualPipe** ([2412.19437](https://arxiv.org/abs/2412.19437)) pushes further: it runs
+**two micro-batch streams in opposite directions**, each rank holding the two stages symmetric about
+the middle so a forward of one stream fills the other's backward bubble (`≈ (p-1)/(2m)`). It is
+powerful but **deliberately not implemented here**: it costs ~2× parameter memory (replicated stages),
+needs per-direction communicators with careful CUDA-stream / connection ordering to stay deadlock-free,
+and only pays off in a narrow regime (very large `p`, or large MoE models where it hides cross-node
+expert-parallel comm). That machinery dwarfs the rest of this module, so we keep picotron's PP small
+and readable and leave DualPipe as further reading.
 
 ---
 
 ## 6. Deadlock-free ring communication
 
 Every schedule fuses its point-to-point ops into a single `dist.batch_isend_irecv` group
-(`pipeline_communicate`, `interleaved_pipeline_communicate`, `ring_exchange`, `_stream_p2p` in
-`pp_communications.py` / `pp_schedules.py`). Synchronous ring P2P otherwise deadlocks when every rank
+(`pipeline_communicate`, `interleaved_pipeline_communicate` in `pp_communications.py`). Synchronous
+ring P2P otherwise deadlocks when every rank
 blocks on a send whose matching receive sits behind the partner's own send; batching all ops into one
 NCCL group is matched and deadlock-free. Every `send` in a schedule is count-matched by exactly one
 `recv`, so there is never a phantom op to hang on.
@@ -190,10 +173,7 @@ torchrun --nproc_per_node 4 tests/test_pipeline_parallel.py   # p=4
 torchrun --nproc_per_node 8 tests/test_pipeline_parallel.py   # p=8
 ```
 
-Zero-Bubble and Interleaved match the reference **exactly** (`grad_diff = 0`); DualPipe matches to
-float-accumulation order (`< 1e-4` on gloo, `~7e-9` on NCCL fp32), since it sums two partial gradients
-computed over disjoint micro-batch streams. The concurrent NCCL driver is validated bit-exact in
-isolation as well as on the gloo thread driver.
+Zero-Bubble and Interleaved match the reference **exactly** (`grad_diff = 0`) at `p = 2/4/8`.
 
 ---
 
@@ -224,38 +204,19 @@ ZB-H1 ties 1F1B here: its true ~1× split removed the old 2× tax, but the frame
 W-deferral has enough Python overhead to roughly cancel the bubble-fill on L4, while costing more
 activation memory — an honest ZB-H1 result on commodity GPUs.
 
-**DualPipe** now runs its two opposing streams concurrently (each on its own CUDA stream over its own
-NCCL communicator) and is **bit-exact and deadlock-free on NCCL at p = 2/4/8**. Measured on the same
-8× L4 box (p = 8, bf16, 32-layer, m = 16):
-
-| engine | step ms | tok/s | peak MB | bubble(emp) | vs 1f1b |
-|---|---|---|---|---|---|
-| 1f1b | 377.9 | 43351 | 2190 | 0.339 | 1.00× |
-| interleaved | 352.5 | 46482 | 3061 | 0.291 | **1.07×** |
-| dualpipe | 484.1 | 33846 | 3155 | 0.484 | 0.78× |
-
-DualPipe is **slower** here, and the reason is structural, not a bug: with `p = 8` each rank holds the
-**two** stages symmetric about the middle (chunk 0 = stage `r`, chunk 1 = stage `p-1-r`), so a rank does
-~**2× the layer compute** of a 1F1B rank. The time-overlap recovers a lot of that (it is 1.28×, not 2×,
-of 1F1B), but not all of it. DualPipe pays off only where the bubble it removes exceeds that 2×
-replication tax — very large `p` with small `m`, and/or with DeepSeek's intra-chunk SM-level kernel
-overlap (the custom-CUDA piece we did not build). The `bubble(emp)` column for dualpipe uses the
-single-stage 1F1B compute baseline, so it overstates dualpipe's bubble (it runs two stages) and is only
-indicative. (`m = 32/64` were not captured — they exceeded the benchmark's per-run timeout guard.)
-
 ---
 
 ## 9. Configuration / training integration
 
-`create_config.py --pp_engine {afab,1f1b,zb,interleaved,dualpipe}` (with `--num_virtual_stages` for the
+`create_config.py --pp_engine {afab,1f1b,zb,interleaved}` (with `--num_virtual_stages` for the
 interleaved engine) writes the choice into the config. In `train.py`:
 
 - `afab`, `1f1b`, `zb` are fully wired — Zero-Bubble is a drop-in over 1F1B because it reuses the
   `PipelineParallel` stage, so it shares the existing HF weight-materialization / checkpoint path.
-- `interleaved` and `dualpipe` use the multi-chunk wrappers, which the HF checkpoint-materialization
-  path does not yet understand. They are implemented and gradient-validated on both the gloo/CPU and
-  NCCL/GPU harnesses (DualPipe bit-exact at `p = 2/4/8` on NCCL); wiring their multi-chunk layout into
-  the HF training loop is left as follow-up.
+- `interleaved` uses the multi-chunk `InterleavedPipelineParallel` wrapper, which the HF
+  checkpoint-materialization path does not yet understand. It is implemented and gradient-validated on
+  the gloo/CPU and NCCL/GPU harnesses; wiring its multi-chunk layout into the HF training loop is left
+  as follow-up.
 
 ---
 

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" font-family="Helvetica, Arial, sans-serif">
+  <!-- root cause banner -->
+  <rect x="120" y="14" width="760" height="50" rx="8" fill="#f0f1f2" stroke="#c9ced3"/>
+  <text x="500" y="36" text-anchor="middle" font-size="15" fill="#28323b" font-weight="bold">Root cause: sparsity -- only K of E experts fire per token</text>
+  <text x="500" y="55" text-anchor="middle" font-size="12.5" fill="#8a97a0">parameter-compute mismatch (DeepSeek-V3: 685B total / 37B active = 18x; Kimi-K2 = 31x)</text>
+
+  <!-- connectors banner -> walls -->
+  <g stroke="#c9ced3" stroke-width="1.5" fill="none">
+    <path d="M500,64 L500,80 L190,80 L190,116"/>
+    <path d="M500,80 L500,116"/>
+    <path d="M500,80 L810,80 L810,116"/>
+  </g>
+
+  <!-- ===== Wall headers ===== -->
+  <rect x="60"  y="116" width="260" height="32" rx="4" fill="#2f7da6"/>
+  <text x="190" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Memory Wall</text>
+  <rect x="370" y="116" width="260" height="32" rx="4" fill="#c8682f"/>
+  <text x="500" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Communication Wall</text>
+  <rect x="680" y="116" width="260" height="32" rx="4" fill="#2e8b6f"/>
+  <text x="810" y="138" text-anchor="middle" font-size="15" fill="#ffffff" font-weight="bold">Compute Wall</text>
+
+  <!-- ===== Wall bodies ===== -->
+  <rect x="60"  y="150" width="260" height="214" fill="#eaf3f8" stroke="#2f7da6" stroke-width="1.5"/>
+  <rect x="370" y="150" width="260" height="214" fill="#fbf0e6" stroke="#c8682f" stroke-width="1.5"/>
+  <rect x="680" y="150" width="260" height="214" fill="#e9f5f0" stroke="#2e8b6f" stroke-width="1.5"/>
+  <!-- faint brick seams -->
+  <g stroke-width="1" opacity="0.35">
+    <line x1="60"  y1="221" x2="320" y2="221" stroke="#2f7da6"/><line x1="60"  y1="292" x2="320" y2="292" stroke="#2f7da6"/>
+    <line x1="370" y1="221" x2="630" y2="221" stroke="#c8682f"/><line x1="370" y1="292" x2="630" y2="292" stroke="#c8682f"/>
+    <line x1="680" y1="221" x2="940" y2="221" stroke="#2e8b6f"/><line x1="680" y1="292" x2="940" y2="292" stroke="#2e8b6f"/>
+  </g>
+
+  <!-- Memory text (3 lines) -->
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="190" y="186">all E experts resident</text>
+    <text x="190" y="258">params + grads + optim</text>
+    <text x="190" y="330">routing -&gt; memory spikes</text>
+  </g>
+  <!-- Communication text (4 lines) -->
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="500" y="178">a2a dispatch + combine</text>
+    <text x="500" y="213">vol ~ T*K*h*(EP-1)/EP</text>
+    <text x="500" y="284">off-node BW drops ~10x</text>
+    <text x="500" y="330">20-60% of the step</text>
+  </g>
+  <!-- Compute text (4 lines) -->
+  <g font-size="12.5" fill="#28323b" text-anchor="middle">
+    <text x="810" y="178">small GEMMs (idle SMs)</text>
+    <text x="810" y="213">routing/permute ~9%</text>
+    <text x="810" y="284">load imbalance</text>
+    <text x="810" y="330">host / launch overhead</text>
+  </g>
+
+  <!-- coupling note -->
+  <line x1="60" y1="384" x2="940" y2="384" stroke="#28323b" stroke-width="1.2"/>
+  <text x="500" y="406" text-anchor="middle" font-size="13" fill="#28323b">Tightly coupled: optimize one wall -&gt; pressure shifts to another</text>
+</svg>

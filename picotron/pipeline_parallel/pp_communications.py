@@ -59,7 +59,7 @@ def interleaved_pipeline_communicate(
     recv_forward=False,
     recv_backward=False,
 ):
-    """Combined ring send/recv for interleaved & DualPipe schedules (deadlock-free).
+    """Combined ring send/recv for the interleaved 1F1B schedule (deadlock-free).
 
     Batches up to four P2P ops in a single :func:`dist.batch_isend_irecv` so every rank posts its
     sends and matching receives together — the only safe pattern for synchronous point-to-point on a
@@ -92,28 +92,6 @@ def interleaved_pipeline_communicate(
             req.wait()
         _device_synchronize()
     return recv_forward_tensor, recv_backward_tensor
-
-
-def ring_exchange(send_ops, recv_specs, device, dtype):
-    """Generic deadlock-free batched P2P used by DualPipe's two opposing micro-batch streams.
-
-    ``send_ops`` is a list of ``(tensor, peer_rank)`` and ``recv_specs`` a list of ``(peer_rank,
-    shape)``; returns the received tensors in ``recv_specs`` order. As in
-    :func:`interleaved_pipeline_communicate`, every op is fused into one batch_isend_irecv group so
-    merging both streams' communication into one call cannot deadlock and is not serialized by
-    NCCL's eager mode at large pp_size.
-    """
-    ops = [dist.P2POp(dist.isend, tensor, peer) for tensor, peer in send_ops]
-    recv_tensors = []
-    for peer, shape in recv_specs:
-        t = torch.empty(shape, requires_grad=True, device=device, dtype=dtype)
-        recv_tensors.append(t)
-        ops.append(dist.P2POp(dist.irecv, t, peer))
-    if ops:
-        for req in dist.batch_isend_irecv(ops):
-            req.wait()
-        _device_synchronize()
-    return recv_tensors
 
 
 def bidirectional_pipeline_communicate(operation, send_tensor, recv_shapes, device, dtype):

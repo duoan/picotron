@@ -1,6 +1,6 @@
 """Correctness tests for the advanced pipeline-parallel schedules.
 
-Every schedule (Zero-Bubble, Interleaved 1F1B, DualPipe) must produce **bit-exact gradients** vs a
+Every schedule (Zero-Bubble, Interleaved 1F1B) must produce **bit-exact gradients** vs a
 non-pipelined full-model reference on the same weights + micro-batches. We build a tiny Llama, take a
 full-model gradient reference, then shard the *same* modules across ``pp_size`` ranks (restoring the
 reference weights), run each schedule, and compare the gradients of the layers this rank owns.
@@ -145,20 +145,6 @@ def test_interleaved(cfg, device, num_virtual_stages=2):
     compare_owned_grads(model, ref_grads, f"interleaved(v={num_virtual_stages})")
 
 
-def test_dualpipe(cfg, device):
-    from picotron.pipeline_parallel.pp_schedules import (
-        DualPipeParallel,
-        dualpipe_reduce_grads,
-        train_step_pipeline_dualpipe,
-    )
-
-    dl = FakeDataLoader(cfg, GRAD_ACC_STEPS, MBS, SEQ, device)
-    model, stage, ref_grads = build_reference_and_stage(cfg, dl, device, DualPipeParallel)
-    run_schedule(stage, train_step_pipeline_dualpipe, dl, cfg, device)
-    dualpipe_reduce_grads(stage, device=device, dtype=torch.float32)
-    compare_owned_grads(model, ref_grads, "dualpipe", atol=1e-4)
-
-
 def main():
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
@@ -191,7 +177,6 @@ def main():
     assert world_size > 1, "pipeline tests need pp_size >= 2 (torchrun --nproc_per_node 2)"
     test_zero_bubble(cfg, device)
     test_interleaved(cfg, device, num_virtual_stages=2)
-    test_dualpipe(cfg, device)
 
     dist.barrier()
     dist.destroy_process_group()

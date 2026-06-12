@@ -45,13 +45,43 @@ _ORIG_LINEAR_FORWARD = nn.Linear.forward
 def _zb_linear_forward(self, input):
     # Only defer bias-free trainable Linears (the q/k/v/o/up/gate/down projections that dominate
     # backward FLOPs). Falls back to the stock path whenever ZB is not the active schedule, so
-    # AFAB/1F1B/interleaved/dualpipe are completely unaffected.
+    # AFAB/1F1B/interleaved are completely unaffected.
     if _ZB_DEFER and self.bias is None and self.weight.requires_grad:
         return _DeferredLinear.apply(input, self.weight)
     return _ORIG_LINEAR_FORWARD(self, input)
 
 
 nn.Linear.forward = _zb_linear_forward
+
+
+def distribute_layers(num_layers, num_stages):
+    """Split ``num_layers`` into ``num_stages`` contiguous groups, as evenly as possible.
+
+    Returns a list of ``num_stages`` lists of layer indices (the extra layers from an uneven split go
+    to the earliest stages). Shared by every pipeline wrapper so layer-to-stage assignment is defined
+    in exactly one place.
+    """
+    per_stage = [num_layers // num_stages + (1 if i < num_layers % num_stages else 0) for i in range(num_stages)]
+    groups, start = [], 0
+    for n in per_stage:
+        groups.append(list(range(start, start + n)))
+        start += n
+    return groups
+
+
+def pp_autograd_backward(input_tensor, output_tensor, output_tensor_grad):
+    """One pipeline-stage backward via autograd, returning the gradient w.r.t. the stage input.
+
+    ``output_tensor_grad`` is the grad received from the next stage (``None`` on the last stage, where
+    ``output_tensor`` is the scalar loss → seed with ones). Retaining ``input_tensor.grad`` is how we
+    read off the activation gradient to send upstream. Shared by all pipeline stage wrappers.
+    """
+    if input_tensor is not None:
+        input_tensor.retain_grad()
+    if output_tensor_grad is None:
+        output_tensor_grad = torch.ones_like(output_tensor, memory_format=torch.preserve_format)
+    torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad)
+    return input_tensor.grad if input_tensor is not None else None
 
 
 class PipelineParallel(nn.Module):
@@ -91,19 +121,10 @@ class PipelineParallel(nn.Module):
             self.final_proj.reset_parameters()
 
     def distribute_layers(self, num_layers):
-        """
-        Distribute model layers across GPUs as evenly as possible.
-        Returns the layer indices that should be processed by this GPU.
-        """
-        # Calculate layers per GPU, handling uneven distribution
-        layers_per_gpu = [
-            num_layers // pgm.process_group_manager.pp_world_size
-            + (1 if i < num_layers % pgm.process_group_manager.pp_world_size else 0)
-            for i in range(pgm.process_group_manager.pp_world_size)
+        """Return the layer indices this rank's (contiguous) stage owns."""
+        return distribute_layers(num_layers, pgm.process_group_manager.pp_world_size)[
+            pgm.process_group_manager.pp_rank
         ]
-        # Calculate starting layer for this GPU
-        start_layer = sum(layers_per_gpu[: pgm.process_group_manager.pp_rank])
-        return list(range(start_layer, start_layer + layers_per_gpu[pgm.process_group_manager.pp_rank]))
 
     def forward(self, input_ids, position_ids, hidden_states):
         """
@@ -118,17 +139,8 @@ class PipelineParallel(nn.Module):
         return self.final_proj(x)
 
     def backward(self, input_tensor, output_tensor, output_tensor_grad):
-        """
-        Backward pass for this pipeline stage.
-        Computes gradients for assigned layers using received gradient from next stage.
-        """
-        if input_tensor is not None:
-            input_tensor.retain_grad()
-        if output_tensor_grad is None:
-            output_tensor_grad = torch.ones_like(output_tensor, memory_format=torch.preserve_format)
-        # torch.autograd.backward will automatically accumulates gradients in the leaves (cf: https://pytorch.org/docs/stable/generated/torch.autograd.backward.html)
-        torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad, retain_graph=False, create_graph=False)
-        return input_tensor.grad if input_tensor is not None else None
+        """Backward pass for this pipeline stage (autograd accumulates grads into the owned leaves)."""
+        return pp_autograd_backward(input_tensor, output_tensor, output_tensor_grad)
 
     # --- Zero-Bubble split backward (Qi et al., ICLR 2024, https://arxiv.org/abs/2401.10241) ---
     # B = gradient w.r.t. the stage *input* (critical path, sent upstream); W = gradient w.r.t. the

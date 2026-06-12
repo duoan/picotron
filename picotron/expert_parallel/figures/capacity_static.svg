@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="16" fill="#28323b" font-weight="bold">Static-memory dispatch: stop sizing buffers to the router</text>
+
+  <!-- ===== LEFT: dropless variable-size ===== -->
+  <text x="60" y="66" font-size="14" fill="#28323b" font-weight="bold">Dropless (naive/tiled): buffer = actual count</text>
+  <line x1="60" y1="300" x2="430" y2="300" stroke="#28323b" stroke-width="1.5"/>
+  <g fill="#d6ebf4" stroke="#2f7da6" stroke-width="2">
+    <rect x="80"  y="170" width="60" height="130"/>
+    <rect x="170" y="245" width="60" height="55"/>
+    <rect x="260" y="205" width="60" height="95"/>
+    <rect x="350" y="120" width="60" height="180"/>
+  </g>
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <text x="110" y="318">E0</text><text x="200" y="318">E1</text>
+    <text x="290" y="318">E2</text><text x="380" y="318">E3</text>
+  </g>
+  <text x="245" y="345" text-anchor="middle" font-size="13" fill="#c0392b">heights swing every step -&gt; fragmentation / OOM</text>
+
+  <!-- ===== RIGHT: fixed capacity ===== -->
+  <text x="560" y="66" font-size="14" fill="#28323b" font-weight="bold">Capacity-capped: fixed C per (rank, expert)</text>
+  <line x1="560" y1="300" x2="960" y2="300" stroke="#28323b" stroke-width="1.5"/>
+  <!-- cap line -->
+  <line x1="560" y1="190" x2="960" y2="190" stroke="#28323b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="966" y="194" font-size="12" fill="#28323b">C</text>
+  <!-- round 1: every expert exactly C -->
+  <g fill="#f6e1d2" stroke="#c8682f" stroke-width="2">
+    <rect x="580" y="190" width="60" height="110"/>
+    <rect x="660" y="190" width="60" height="110"/>
+    <rect x="740" y="190" width="60" height="110"/>
+    <rect x="820" y="190" width="60" height="110"/>
+  </g>
+  <!-- round 2: overflow re-run on the SAME fixed buffer (dropless) -->
+  <g fill="#fbf1e7" stroke="#c8682f" stroke-width="1.5" stroke-dasharray="4 3">
+    <rect x="580" y="150" width="60" height="34"/>
+    <rect x="820" y="120" width="60" height="64"/>
+  </g>
+  <g font-size="13" fill="#28323b" text-anchor="middle">
+    <text x="610" y="318">E0</text><text x="690" y="318">E1</text>
+    <text x="770" y="318">E2</text><text x="850" y="318">E3</text>
+  </g>
+  <text x="760" y="345" text-anchor="middle" font-size="13" fill="#2e7d32">fixed shape (fwd+bwd); dropless = extra capped rounds</text>
+</svg>

@@ -26,6 +26,7 @@ from picotron.checkpoint import (
 from picotron.context_parallel.context_parallel import apply_context_parallel
 from picotron.data import MicroBatchDataLoader
 from picotron.data_parallel.data_parallel import DataParallelBucket
+from picotron.expert_parallel.expert_parallel import collect_aux_loss
 from picotron.model import Llama
 from picotron.pipeline_parallel.pipeline_parallel import (
     PipelineParallel,
@@ -67,6 +68,11 @@ def train_step(model, data_loader, device):
         target_ids = target_ids.reshape(-1)
         outputs = outputs.view(seq_len * batch_size, -1)
         loss = F.cross_entropy(outputs, target_ids, reduction="mean") / data_loader.grad_acc_steps
+
+        # MoE load-balancing aux loss (no-op when no MoE layer or aux loss is disabled).
+        aux_loss = collect_aux_loss(model)
+        if aux_loss is not None:
+            loss = loss + aux_loss / data_loader.grad_acc_steps
 
         loss.backward()
 
@@ -221,6 +227,13 @@ if __name__ == "__main__":
         model_config.moe_latent_dim = config["model"].get("moe_latent_dim", 0)
         # Dispatch/combine backend: "torch" (portable) or "deepep" (Hopper SM90+, auto-fallback).
         model_config.ep_backend = config["model"].get("ep_backend", "torch")
+        # Capacity-capped / static-memory dispatch (0 disables -> dropless variable-sized path).
+        model_config.ep_capacity_factor = config["model"].get("ep_capacity_factor", 0.0)
+        model_config.ep_capacity_dropless = config["model"].get("ep_capacity_dropless", True)
+        model_config.ep_max_rounds = config["model"].get("ep_max_rounds", 8)
+        # Router load balancing: aux-loss coefficient and loss-free bias update rate (0 disables each).
+        model_config.router_aux_loss_coef = config["model"].get("router_aux_loss_coef", 0.0)
+        model_config.router_bias_update_rate = config["model"].get("router_bias_update_rate", 0.0)
         objects = [model_config]
     else:
         objects = [None]
@@ -297,11 +310,11 @@ if __name__ == "__main__":
                 # Zero-Bubble reuses the PipelineParallel stage (B/W-split backward), so it is a
                 # drop-in over 1F1B with the same weight-materialization / checkpoint path.
                 loss = train_step_pipeline_zb(model, data_loader, tensor_shapes, device, dtype)
-            elif pp_engine in ("interleaved", "dualpipe"):
-                # These use the multi-chunk InterleavedPipelineParallel / DualPipeParallel wrappers,
-                # which the HF checkpoint-materialization path does not yet understand. They are
-                # implemented and gradient-validated on the gloo/CPU harness; see
-                # tests/test_pipeline_parallel.py and tests/bench_pp_schedules.py.
+            elif pp_engine == "interleaved":
+                # Uses the multi-chunk InterleavedPipelineParallel wrapper, which the HF
+                # checkpoint-materialization path does not yet understand. It is implemented and
+                # gradient-validated on the gloo/CPU harness; see tests/test_pipeline_parallel.py
+                # and tests/bench_pp_schedules.py.
                 raise NotImplementedError(
                     f"pp_engine='{pp_engine}' is validated via tests/bench_pp_schedules.py but not yet "
                     "wired into the HF checkpoint/training path (multi-chunk stage layout)."

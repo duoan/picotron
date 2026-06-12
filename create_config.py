@@ -34,6 +34,11 @@ def create_single_config(
     ep_fp8_dispatch: bool,
     moe_latent_dim: int,
     ep_backend: str,
+    ep_capacity_factor: float,
+    ep_capacity_dropless: bool,
+    ep_max_rounds: int,
+    router_aux_loss_coef: float,
+    router_bias_update_rate: float,
     grad_acc_steps: int,
     mbs: int,
     seq_len: int,
@@ -79,6 +84,11 @@ def create_single_config(
     config_content["model"]["ep_fp8_dispatch"] = ep_fp8_dispatch
     config_content["model"]["moe_latent_dim"] = moe_latent_dim
     config_content["model"]["ep_backend"] = ep_backend
+    config_content["model"]["ep_capacity_factor"] = ep_capacity_factor
+    config_content["model"]["ep_capacity_dropless"] = ep_capacity_dropless
+    config_content["model"]["ep_max_rounds"] = ep_max_rounds
+    config_content["model"]["router_aux_loss_coef"] = router_aux_loss_coef
+    config_content["model"]["router_bias_update_rate"] = router_bias_update_rate
     del tmp_model_config
 
     config_content["distributed"]["tp_size"] = tp
@@ -125,11 +135,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pp_engine",
         type=str,
-        help="pipeline parallel engine: afab, 1f1b, zb (Zero-Bubble); interleaved/dualpipe are "
+        help="pipeline parallel engine: afab, 1f1b, zb (Zero-Bubble); interleaved is "
         "implemented + gradient-validated on the CPU harness (tests/bench_pp_schedules.py) but not "
         "yet wired into the HF training path",
         default="1f1b",
-        choices=["afab", "1f1b", "zb", "interleaved", "dualpipe"],
+        choices=["afab", "1f1b", "zb", "interleaved"],
     )
     parser.add_argument(
         "--num_virtual_stages",
@@ -153,6 +163,17 @@ if __name__ == "__main__":
     parser.add_argument("--ep_fp8_dispatch", type=int, help="FP8 (E4M3) dispatch all-to-all (1/0)", default=0)
     parser.add_argument("--moe_latent_dim", type=int, help="LatentMoE latent dim (0/>=hidden = off)", default=0)
     parser.add_argument("--ep_backend", type=str, help="MoE dispatch/combine backend: torch|deepep", default="torch")
+    parser.add_argument(
+        "--ep_capacity_factor", type=float, help="Fixed-capacity dispatch factor (0=off, dropless)", default=0.0
+    )
+    parser.add_argument(
+        "--ep_capacity_dropless", type=int, help="Capacity mode: 1=static-memory dropless rounds, 0=drop", default=1
+    )
+    parser.add_argument("--ep_max_rounds", type=int, help="Max dropless capacity rounds", default=8)
+    parser.add_argument("--router_aux_loss_coef", type=float, help="Load-balance aux loss coef (0=off)", default=0.0)
+    parser.add_argument(
+        "--router_bias_update_rate", type=float, help="Loss-free bias update rate (0=off)", default=0.0
+    )
     parser.add_argument("--grad_acc_steps", type=int, help="grad accumulation", default=1)
     parser.add_argument("--mbs", type=int, help="micro batch size", default=1)
     parser.add_argument("--seq_len", type=int, help="Sequence length", default=1024)
@@ -186,6 +207,11 @@ if __name__ == "__main__":
         ep_fp8_dispatch=bool(args.ep_fp8_dispatch),
         moe_latent_dim=args.moe_latent_dim,
         ep_backend=args.ep_backend,
+        ep_capacity_factor=args.ep_capacity_factor,
+        ep_capacity_dropless=bool(args.ep_capacity_dropless),
+        ep_max_rounds=args.ep_max_rounds,
+        router_aux_loss_coef=args.router_aux_loss_coef,
+        router_bias_update_rate=args.router_bias_update_rate,
         grad_acc_steps=args.grad_acc_steps,
         mbs=args.mbs,
         seq_len=args.seq_len,

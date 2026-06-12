@@ -4,7 +4,7 @@ theme: gaia
 paginate: true
 math: katex
 title: "Advanced Pipeline Parallelism in picotron"
-description: "From the 1F1B bubble to Zero-Bubble, Interleaved 1F1B, and DualPipe"
+description: "From the 1F1B bubble to Zero-Bubble and Interleaved 1F1B"
 style: |
   section {
     font-family: 'Inter', 'Roboto', sans-serif;
@@ -29,10 +29,10 @@ style: |
 # Pipeline Parallelism, from scratch
 ## How `picotron`'s pipeline_parallel works — then the last two years of PP research
 
-Why PP → naive pipelining → the bubble → 1F1B → **Zero-Bubble**, **Interleaved 1F1B**, **DualPipe**
+Why PP → naive pipelining → the bubble → 1F1B → **Zero-Bubble**, **Interleaved 1F1B**
 
-<span class="muted">build up from "split the model across devices" to three modern schedules that each attack the `(p-1)/m` bubble</span>
-<span class="muted">deep dive: micro-batching · autograd B/W split · virtual stages · bidirectional streams · deadlock-free P2P · bit-exact tests</span>
+<span class="muted">build up from "split the model across devices" to two modern schedules that each attack the `(p-1)/m` bubble</span>
+<span class="muted">deep dive: micro-batching · autograd B/W split · virtual stages · deadlock-free P2P · bit-exact tests</span>
 
 ---
 
@@ -126,21 +126,20 @@ train_step_pipeline_1f1b   # 1 fwd / 1 bwd steady state — bubble (p-1)/m, boun
 Each rank holds a `PipelineParallel` stage: `embedding` (first), some `decoder_layers`,
 `final_norm` + `final_proj` (last). Communication is point-to-point on a ring.
 
-**Goal:** shrink the `(p-1)/m` bubble. Three levers, three trade-offs:
+**Goal:** shrink the `(p-1)/m` bubble. Two levers, two trade-offs:
 
 | schedule | idea | trades |
 |---|---|---|
 | Zero-Bubble | split backward into B + W | W-queue activation memory (~1× FLOPs) |
 | Interleaved 1F1B | `v` virtual stages per rank | `v`× more comm |
-| DualPipe | two opposing streams | ~2× parameter memory |
 
 ---
 
-## The three levers in one picture
+## The levers in one picture
 
 ![w:1000](figures/dualpipe_deepseek.png)
 
-<span class="muted">DeepSeek-V3 (arXiv:2412.19437). **Top — 1F1B:** the `(p-1)/m` baseline. **Middle — ZB1P:** backward split into **B** (input-grad, teal) + **W** (weight-grad, green) → **Lever 1**. **Bottom — DualPipe:** two opposing F/B streams fill each other's bubbles → **Lever 3**. (Interleaved 1F1B / Lever 2 is the orthogonal "`v` chunks per rank" axis.)</span>
+<span class="muted">DeepSeek-V3 (arXiv:2412.19437). **Top — 1F1B:** the `(p-1)/m` baseline. **Middle — ZB1P:** backward split into **B** (input-grad, teal) + **W** (weight-grad, green) → **Lever 1**. (Interleaved 1F1B / Lever 2 is the orthogonal "`v` chunks per rank" axis.) The **bottom — DualPipe** row is the bidirectional schedule we leave as further reading — see the closing slide.</span>
 
 ---
 
@@ -209,42 +208,6 @@ class InterleavedPipelineParallel(nn.Module):
 
 ---
 
-## Lever 3 — DualPipe (bidirectional pipeline)
-
-<span class="muted">DeepSeek-V3 — arXiv:2412.19437</span>
-
-Run **two micro-batch streams in opposite directions**. Each rank holds the two stages symmetric
-about the middle (stage `r` and stage `p-1-r`), so a stage is replicated across the pair `(r, p-1-r)`.
-
-![w:840](figures/dualpipe.svg)
-
----
-
-## DualPipe: two streams overlapped in time (what we built)
-
-```python
-# Each stream is a generator yielding its batched P2P at every comm point:
-down = _dualpipe_stream(model, batches[:m//2], group=grp_down, ...)  # stage 0→p-1
-up   = _dualpipe_stream(model, batches[m//2:], group=grp_up,   ...)  # stage p-1→0 (mirror)
-_drive_dualpipe(down, up)      # interleave the two on independent communicators
-dualpipe_reduce_grads(model)   # sum each replicated stage's grads across (r, p-1-r)
-```
-
-- **Structure** (replicated stages + cross-pair grad sum) reproduces a full `m`-micro-batch gradient
-  **bit-exactly** — on gloo **and** NCCL.
-- **Time-domain overlap is real:** one stream's forwards fill the other's backward bubbles
-  (bubble `≈ (p-1)/(2m)`). NCCL → single-thread completion-polling driver (`is_completed()`), comm of one
-  direction overlaps compute of the other on its own CUDA stream; gloo → thread-per-stream on separate
-  communicators. Independent PP subgroups keep the two streams' P2P from aliasing.
-- **Bit-exact + deadlock-free on NCCL at `p=2/4/8`** (eager P2P-connection warmup + per-stream CUDA
-  streams break the lazy-handshake / CUDA-stream-ordering deadlocks).
-- **Caveat:** each rank holds **two** stages (`r` and `p-1-r`) → ~2× layer compute. On 8×L4 (`p=8,
-  m=16`) it is 0.78× of 1F1B: overlap recovers most of the 2× (it is 1.28×, not 2×) but not all. It pays
-  off only where removed bubble > 2× replication tax — very large `p`/small `m`, or with DeepSeek's
-  intra-chunk SM-level kernel overlap (the remaining custom-CUDA piece).
-
----
-
 ## Why batched P2P is mandatory
 
 Synchronous ring P2P deadlocks if every rank blocks on a send whose matching receive sits behind the
@@ -278,10 +241,9 @@ torchrun --nproc_per_node 4 tests/test_pipeline_parallel.py   # p=4
 ```
 [rank 0] zero_bubble    PASSED  grad_diff = 0.00e+00
 [rank 0] interleaved(v=2) PASSED grad_diff = 0.00e+00
-[rank 0] dualpipe       PASSED  grad_diff = 2.98e-08   # float accumulation order, < 1e-4
 ```
 
-ZB / interleaved are **exactly** the reference; DualPipe matches to float-accumulation order.
+ZB and interleaved match the reference **exactly** (`grad_diff = 0`) at `p = 2/4/8`.
 
 ---
 
@@ -292,13 +254,11 @@ ZB / interleaved are **exactly** the reference; DualPipe matches to float-accumu
 `tests/bench_pp_schedules.py` reports measured step time next to these analytical fractions. On 8× L4
 (p=8, bf16, m=16): interleaved wins (1.07×); ZB-H1's true ~1× split ties 1F1B (the per-Linear
 W-deferral's Python overhead roughly cancels the bubble-fill on commodity GPUs) while costing extra
-activation memory; DualPipe is 0.78× — bit-exact and overlapped, but each rank's 2-stage replication is
-~2× compute that the overlap only partly hides. An honest result. On a tiny CPU model the bubble is
-invisible (compute dominates).
+activation memory. An honest result. On a tiny CPU model the bubble is invisible (compute dominates).
 
 ---
 
-## Recap — three trade-offs against `(p-1)/m`
+## Recap — two trade-offs against `(p-1)/m`
 
 <div class="cols"><div>
 
@@ -314,19 +274,19 @@ invisible (compute dominates).
 
 </div><div>
 
-**DualPipe**
-- two opposing streams, replicated stages
-- bubble `(p-1)/(2m)` (overlapped)
-- cost: ~2× param memory
-
-**All three**
+**Both**
 - built on picotron's 1F1B engine
 - deadlock-free ring P2P
 - bit-exact vs full-model reference
 
+**Further reading: DualPipe** (DeepSeek-V3)
+- two opposing streams, `(p-1)/(2m)`
+- ~2× param memory + custom CUDA overlap
+- powerful but too complex for this module
+
 </div></div>
 
-<span class="muted">Wired into `create_config.py --pp_engine` / `train.py`: ZB is a drop-in; interleaved/dualpipe run on the test+bench harness (gloo/CPU + NCCL/GPU).</span>
+<span class="muted">Wired into `create_config.py --pp_engine` / `train.py`: ZB is a drop-in; interleaved runs on the test+bench harness (gloo/CPU + NCCL/GPU).</span>
 
 ---
 
@@ -336,4 +296,4 @@ invisible (compute dominates).
 
 `picotron/pipeline_parallel/pp_schedules.py` · `tests/test_pipeline_parallel.py` · `tests/bench_pp_schedules.py`
 
-<span class="muted">Zero-Bubble (Qi 2024) · Interleaved 1F1B (Narayanan 2021) · DualPipe (DeepSeek-V3 2024)</span>
+<span class="muted">Zero-Bubble (Qi 2024) · Interleaved 1F1B (Narayanan 2021)</span>
