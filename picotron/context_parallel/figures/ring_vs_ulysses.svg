@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="18" fill="#28323b" font-weight="bold">Two ways to do attention when the sequence is sharded</text>
+
+  <defs>
+    <marker id="rv" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#2f7da6"/></marker>
+    <marker id="rvc" markerWidth="11" markerHeight="11" refX="6" refY="3.2" orient="auto"><path d="M0,0 L8,3.2 L0,6.4 z" fill="#c79a2b"/></marker>
+  </defs>
+
+  <!-- Ring -->
+  <text x="20" y="78" font-size="15" fill="#b05a4f" font-weight="bold">Ring attention</text>
+  <text x="20" y="98" font-size="12" fill="#8a97a0">sequence stays sharded; K/V rotate around the ring</text>
+
+  <rect x="250" y="60" width="150" height="50" rx="8" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="325" y="82" text-anchor="middle" font-size="12" fill="#7a352e">rank 0</text>
+  <text x="325" y="99" text-anchor="middle" font-size="11" fill="#8a97a0">Q,K,V [b,h,S/2,d]</text>
+
+  <rect x="600" y="60" width="150" height="50" rx="8" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="675" y="82" text-anchor="middle" font-size="12" fill="#7a352e">rank 1</text>
+  <text x="675" y="99" text-anchor="middle" font-size="11" fill="#8a97a0">Q,K,V [b,h,S/2,d]</text>
+
+  <path d="M400,75 C500,45 500,45 600,75" fill="none" stroke="#c79a2b" stroke-width="2.5" marker-end="url(#rvc)"/>
+  <path d="M600,95 C500,125 500,125 400,95" fill="none" stroke="#c79a2b" stroke-width="2.5" marker-end="url(#rvc)"/>
+  <text x="500" y="40" text-anchor="middle" font-size="11" fill="#9c7a1f">send/recv K,V (P2P), step by step</text>
+  <text x="500" y="138" text-anchor="middle" font-size="11" fill="#9c7a1f">online-softmax merges each block; cost ~ O(S^2/cp)</text>
+
+  <line x1="20" y1="165" x2="980" y2="165" stroke="#dfe6ea" stroke-width="1.5"/>
+
+  <!-- Ulysses -->
+  <text x="20" y="205" font-size="15" fill="#3a9d5d" font-weight="bold">Ulysses attention</text>
+  <text x="20" y="225" font-size="12" fill="#8a97a0">all-to-all to head-parallel, dense local attention, all-to-all back</text>
+
+  <rect x="120" y="250" width="170" height="54" rx="8" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="205" y="272" text-anchor="middle" font-size="12" fill="#256b3f">seq-sharded</text>
+  <text x="205" y="290" text-anchor="middle" font-size="11" fill="#256b3f">[b, h, S/cp, d]</text>
+
+  <circle cx="345" cy="277" r="22" fill="#fff3d6" stroke="#c79a2b" stroke-width="2"/>
+  <text x="345" y="274" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">all</text>
+  <text x="345" y="287" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">2all</text>
+
+  <rect x="400" y="250" width="190" height="54" rx="8" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+  <text x="495" y="270" text-anchor="middle" font-size="12" fill="#2f7da6">head-sharded, full seq</text>
+  <text x="495" y="288" text-anchor="middle" font-size="11" fill="#48606e">[b, h/cp, S, d]  -> attn</text>
+
+  <circle cx="645" cy="277" r="22" fill="#fff3d6" stroke="#c79a2b" stroke-width="2"/>
+  <text x="645" y="274" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">all</text>
+  <text x="645" y="287" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">2all</text>
+
+  <rect x="700" y="250" width="170" height="54" rx="8" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="785" y="272" text-anchor="middle" font-size="12" fill="#256b3f">seq-sharded</text>
+  <text x="785" y="290" text-anchor="middle" font-size="11" fill="#256b3f">[b, h, S/cp, d]</text>
+
+  <line x1="290" y1="277" x2="321" y2="277" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#rv)"/>
+  <line x1="369" y1="277" x2="398" y2="277" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#rv)"/>
+  <line x1="590" y1="277" x2="621" y2="277" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#rv)"/>
+  <line x1="669" y1="277" x2="698" y2="277" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#rv)"/>
+
+  <rect x="120" y="340" width="750" height="100" rx="8" fill="#f7f9fa" stroke="#cdd6db"/>
+  <text x="140" y="366" font-size="13" fill="#28323b" font-weight="bold">Trade-off</text>
+  <text x="140" y="388" font-size="12" fill="#48606e">- Ulysses: 2 all-to-alls per attention, length-independent; dense kernel composes with flash. Faster on a node.</text>
+  <text x="140" y="408" font-size="12" fill="#48606e">- Ulysses limit: needs num_heads (per TP rank) divisible by cp -- cannot scale past the head count.</text>
+  <text x="140" y="428" font-size="12" fill="#48606e">- Ring: P2P, no head-count limit, scales to very long sequences; here it is a python online-softmax reference.</text>
+</svg>

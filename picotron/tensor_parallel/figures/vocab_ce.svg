@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 350" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="18" fill="#28323b" font-weight="bold">Vocab-parallel cross-entropy: never gather the [b, s, V] logits</text>
+
+  <defs>
+    <marker id="vc" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#2f7da6"/></marker>
+  </defs>
+
+  <text x="20" y="80" font-size="14" fill="#b05a4f" font-weight="bold">baseline</text>
+  <rect x="120" y="58" width="150" height="46" rx="6" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+  <text x="195" y="78" text-anchor="middle" font-size="12" fill="#2f7da6">logits [b,s,V/tp]</text>
+  <text x="195" y="95" text-anchor="middle" font-size="11" fill="#8a97a0">vocab-sharded</text>
+
+  <circle cx="330" cy="81" r="20" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="330" y="85" text-anchor="middle" font-size="10" fill="#7a352e" font-weight="bold">AG</text>
+
+  <rect x="380" y="58" width="180" height="46" rx="6" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="470" y="78" text-anchor="middle" font-size="12" fill="#7a352e">full logits [b,s,V]</text>
+  <text x="470" y="95" text-anchor="middle" font-size="11" fill="#7a352e">huge, on every rank</text>
+
+  <rect x="600" y="58" width="170" height="46" rx="6" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="685" y="84" text-anchor="middle" font-size="12" fill="#7a352e">dense softmax + CE</text>
+
+  <line x1="270" y1="81" x2="308" y2="81" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#vc)"/>
+  <line x1="350" y1="81" x2="378" y2="81" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#vc)"/>
+  <line x1="560" y1="81" x2="598" y2="81" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#vc)"/>
+  <text x="800" y="86" font-size="12" fill="#b05a4f">comm = O(V) / token</text>
+
+  <line x1="20" y1="140" x2="980" y2="140" stroke="#dfe6ea" stroke-width="1.5"/>
+
+  <text x="20" y="200" font-size="14" fill="#3a9d5d" font-weight="bold">+ vocab_ce</text>
+  <rect x="120" y="170" width="150" height="46" rx="6" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+  <text x="195" y="190" text-anchor="middle" font-size="12" fill="#2f7da6">logits [b,s,V/tp]</text>
+  <text x="195" y="207" text-anchor="middle" font-size="11" fill="#8a97a0">stay sharded</text>
+
+  <rect x="330" y="160" width="250" height="66" rx="6" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="455" y="182" text-anchor="middle" font-size="12" fill="#256b3f" font-weight="bold">exchange only [b,s] scalars</text>
+  <text x="455" y="200" text-anchor="middle" font-size="11" fill="#256b3f">all-reduce MAX: max logit</text>
+  <text x="455" y="216" text-anchor="middle" font-size="11" fill="#256b3f">all-reduce SUM: sum-exp, target logit</text>
+
+  <rect x="640" y="170" width="200" height="46" rx="6" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="740" y="190" text-anchor="middle" font-size="12" fill="#256b3f">loss = log sumexp - z_target</text>
+  <text x="740" y="207" text-anchor="middle" font-size="11" fill="#256b3f">computed on shards</text>
+
+  <line x1="270" y1="193" x2="328" y2="193" stroke="#3a9d5d" stroke-width="2.5" marker-end="url(#vc)"/>
+  <line x1="580" y1="193" x2="638" y2="193" stroke="#3a9d5d" stroke-width="2.5" marker-end="url(#vc)"/>
+  <text x="800" y="245" font-size="12" fill="#3a9d5d">comm = O(1) / token</text>
+
+  <text x="500" y="312" text-anchor="middle" font-size="14" fill="#8a97a0">The full logits never exist on any rank; for a 32k-128k vocab this is the single biggest activation saved.</text>
+</svg>

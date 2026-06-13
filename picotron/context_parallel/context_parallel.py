@@ -8,6 +8,18 @@ import torch.nn.functional as F
 import picotron.process_group_manager as pgm
 from picotron.context_parallel.cp_communications import ContextCommunicate
 
+# Low-level flash kernels that return / accept the softmax LSE, which is what lets us merge the per-step
+# ring blocks (out, lse) with an online softmax. Optional: the pure-python ring path below works without
+# flash-attn (e.g. fp32 / CPU / FLASH_ATTEN=0).
+try:
+    from flash_attn.flash_attn_interface import (
+        _wrapped_flash_attn_backward,
+        _wrapped_flash_attn_forward,
+    )
+except ImportError:
+    _wrapped_flash_attn_forward = None
+    _wrapped_flash_attn_backward = None
+
 
 def apply_context_parallel(model):
     os.environ["CONTEXT_PARALLEL"] = "1" if pgm.process_group_manager.cp_world_size > 1 else "0"
@@ -15,6 +27,10 @@ def apply_context_parallel(model):
 
 
 def ring_attention(q, k, v, sm_scale, is_causal):
+    # Use the fused flash kernels for the per-block attention when available (FLASH_ATTEN=1); fall back to
+    # the readable pure-python online-softmax reference otherwise.
+    if os.getenv("FLASH_ATTEN", "1") == "1" and _wrapped_flash_attn_forward is not None:
+        return RingFlashAttentionFunc.apply(q, k, v, sm_scale, is_causal)
     return RingAttentionFunc.apply(q, k, v, sm_scale, is_causal)
 
 
@@ -109,6 +125,116 @@ class RingAttentionFunc(torch.autograd.Function):
         d_kv_comm.wait()
 
         return dq, next_dk, next_dv, None, None
+
+
+def _flash_block_forward(q, k, v, sm_scale, causal):
+    """Flash attention for one ring block. q/k/v are [b, h, s, d]; returns out [b, h, s, d], lse [b, h, s]."""
+    qf, kf, vf = (x.transpose(1, 2).contiguous() for x in (q, k, v))  # flash wants [b, s, h, d]
+    out, lse, _, _ = _wrapped_flash_attn_forward(
+        qf, kf, vf, 0.0, sm_scale, causal, -1, -1, 0.0, None, False
+    )
+    return out.transpose(1, 2), lse  # out -> [b, h, s, d]; lse stays [b, h, s]
+
+
+def _flash_block_backward(dout, q, k, v, out, lse, sm_scale, causal):
+    """Flash backward for one ring block. All [b, h, s, d] (lse [b, h, s]); returns dq, dk, dv [b, h, s, d]."""
+    doutf, qf, kf, vf, outf = (x.transpose(1, 2).contiguous() for x in (dout, q, k, v, out))
+    dq, dk, dv = torch.empty_like(qf), torch.empty_like(kf), torch.empty_like(vf)
+    _wrapped_flash_attn_backward(
+        doutf, qf, kf, vf, outf, lse.contiguous(), dq, dk, dv,
+        0.0, sm_scale, causal, -1, -1, 0.0, None, False, None,
+    )
+    return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2)
+
+
+class RingFlashAttentionFunc(torch.autograd.Function):
+    """Ring attention using fused flash kernels for each block (proper ring-flash-attention).
+
+    Identical ring structure to ``RingAttentionFunc`` (same K/V rotation, causal-step logic and
+    online-softmax merge), but each block's attention is computed by flash-attn instead of the
+    pure-python matmul + softmax, so the per-block cost matches a normal flash kernel.
+    """
+
+    @staticmethod
+    def forward(ctx, q, k, v, sm_scale, is_causal):
+        comm = ContextCommunicate("comm")
+        k_og = k.clone()
+        v_og = v.clone()
+        out, lse = None, None
+        next_k, next_v = None, None
+
+        for step in range(comm.world_size):
+            if step + 1 != comm.world_size:
+                next_k = comm.send_recv(k)
+                next_v = comm.send_recv(v)
+                comm.commit()
+
+            if not is_causal or step <= comm.rank:
+                block_out, block_lse = _flash_block_forward(q, k, v, sm_scale, is_causal and step == 0)
+                out, lse = update_out_and_lse(out, lse, block_out, block_lse)
+
+            if step + 1 != comm.world_size:
+                comm.wait()
+                k = next_k
+                v = next_v
+
+        out = out.to(q.dtype)
+        ctx.save_for_backward(q, k_og, v_og, out, lse.squeeze(-1))
+        ctx.sm_scale = sm_scale
+        ctx.is_causal = is_causal
+        return out
+
+    @staticmethod
+    def backward(ctx, dout, *args):
+        q, k, v, out, softmax_lse = ctx.saved_tensors
+        sm_scale = ctx.sm_scale
+        is_causal = ctx.is_causal
+
+        kv_comm = ContextCommunicate("kv_comm")
+        d_kv_comm = ContextCommunicate("d_kv_comm")
+        dq, dk, dv = None, None, None
+        next_dk, next_dv = None, None
+        next_k, next_v = None, None
+
+        for step in range(kv_comm.world_size):
+            if step + 1 != kv_comm.world_size:
+                next_k = kv_comm.send_recv(k)
+                next_v = kv_comm.send_recv(v)
+                kv_comm.commit()
+
+            if step <= kv_comm.rank or not is_causal:
+                bwd_causal = is_causal and step == 0
+                block_dq, block_dk, block_dv = _flash_block_backward(
+                    dout, q, k, v, out, softmax_lse, sm_scale, bwd_causal
+                )
+                if dq is None:
+                    dq = block_dq.to(torch.float32)
+                    dk = block_dk.to(torch.float32)
+                    dv = block_dv.to(torch.float32)
+                else:
+                    dq += block_dq
+                    d_kv_comm.wait()
+                    dk = block_dk + next_dk
+                    dv = block_dv + next_dv
+            elif step != 0:
+                d_kv_comm.wait()
+                dk = next_dk
+                dv = next_dv
+
+            if step + 1 != kv_comm.world_size:
+                kv_comm.wait()
+                k = next_k
+                v = next_v
+
+            # flash backward returns transpose views; make them contiguous before P2P so source/dest
+            # layouts match on both ranks.
+            next_dk = d_kv_comm.send_recv(dk.contiguous())
+            next_dv = d_kv_comm.send_recv(dv.contiguous())
+            d_kv_comm.commit()
+
+        d_kv_comm.wait()
+
+        return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype), None, None
 
 
 def ring_attention_forward(

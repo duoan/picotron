@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import picotron.process_group_manager as pgm
+from picotron.sequence_parallel.sequence_parallel import (
+    ReduceScatterToSequenceParallelRegion,
+    column_parallel_linear_sp,
+)
 from picotron.tensor_parallel.tp_communications import (
     GatherFromModelParallelRegion,
     ReduceFromModelParallelRegion,
@@ -13,7 +17,19 @@ from picotron.tensor_parallel.tp_communications import (
 )
 
 
-def apply_tensor_parallel(model):
+def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool = False, vocab_parallel_ce: bool = False):
+    """Replace the dense Linear/Embedding layers of `model` with their tensor-parallel versions.
+
+    Args:
+        async_tp: overlap the column-parallel input-gradient all-reduce with the weight-gradient GEMM
+            (needs ``CUDA_DEVICE_MAX_CONNECTIONS=1``). Ignored when ``sequence_parallel`` is set.
+        sequence_parallel: shard the norm/residual regions along the sequence dimension (Megatron SP).
+        vocab_parallel_ce: keep the output logits vocab-sharded (no ``gather_output``) so the loss can
+            use ``vocab_parallel_cross_entropy``. When False, the final projection gathers the full
+            logits (the original behavior).
+    """
+    # async overlap targets the all-reduce backward path, which sequence parallelism removes.
+    async_tp = async_tp and not sequence_parallel
 
     def _replace_module(_module, _linear_proj_name, _style, args=None):
         if args is None:
@@ -27,17 +43,21 @@ def apply_tensor_parallel(model):
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
                 gather_output=args.get("gather_output", False),
+                async_all_reduce=async_tp,
+                sequence_parallel=sequence_parallel,
             )
         elif _style == "row":
             new_linear_layer = RowParallelLinear(
                 in_features=linear_layer.in_features,
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
+                sequence_parallel=sequence_parallel,
             )
         else:
             new_linear_layer = VocabParallelEmbedding(
                 num_embeddings=linear_layer.num_embeddings,
                 embedding_dim=linear_layer.embedding_dim,
+                sequence_parallel=sequence_parallel,
             )
         setattr(_module, _linear_proj_name, new_linear_layer)
 
@@ -61,7 +81,9 @@ def apply_tensor_parallel(model):
             _replace_module(module, linear_proj_name, style)
 
     _replace_module(model, "embedding", "vocab")
-    _replace_module(model, "final_proj", "column", args={"gather_output": True})
+    # With vocab-parallel cross-entropy the logits stay vocab-sharded (the loss handles the reduction);
+    # otherwise gather the full logits so the standard dense cross-entropy works unchanged.
+    _replace_module(model, "final_proj", "column", args={"gather_output": not vocab_parallel_ce})
 
     return model
 
@@ -85,6 +107,7 @@ class ColumnParallelLinear(torch.nn.Module):
         bias: bool = False,
         gather_output: bool = False,
         async_all_reduce: bool = False,
+        sequence_parallel: bool = False,
     ) -> None:
         super().__init__()
 
@@ -98,7 +121,9 @@ class ColumnParallelLinear(torch.nn.Module):
         )
         self.output_size_per_partition = out_features // self.tp_world_size
         self.gather_output = gather_output
-        self.async_all_reduce = async_all_reduce
+        self.sequence_parallel = sequence_parallel
+        # async overlap and sequence parallelism are alternative `f`-operator strategies.
+        self.async_all_reduce = async_all_reduce and not sequence_parallel
         # Allocate space for the weight and bias
         # Note: torch.nn.functional.linear performs XW^T + b so we exchange the order of dimensions
         self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features))  # W_i
@@ -127,7 +152,12 @@ class ColumnParallelLinear(torch.nn.Module):
         self.weight.data = weight_list[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.async_all_reduce:
+        if self.sequence_parallel:
+            # Fused all-gather + matmul (the seq-parallel `f`). Only the sequence-sharded input is
+            # checkpointed; the gathered tensor is recomputed in backward, which is what actually
+            # shrinks activation memory.
+            output = column_parallel_linear_sp(x, self.weight, self.bias)
+        elif self.async_all_reduce:
             output = linear_with_async_all_reduce(x, self.weight, self.bias)
         else:
             output = linear_with_all_reduce(x, self.weight, self.bias)
@@ -155,11 +185,12 @@ class RowParallelLinear(nn.Module):
         init_method: method to initialize weights.
     """
 
-    def __init__(self, in_features: int, out_features: int, bias: bool):
+    def __init__(self, in_features: int, out_features: int, bias: bool, sequence_parallel: bool = False):
         super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank
+        self.sequence_parallel = sequence_parallel
 
         self.in_features = in_features
         self.out_features = out_features
@@ -197,8 +228,12 @@ class RowParallelLinear(nn.Module):
     def forward(self, x):
         # X_i * W_i^T + b
         output_parallel = F.linear(x, self.weight)
-        # All-reduce across all the partitions.
-        output = ReduceFromModelParallelRegion.apply(output_parallel)
+        if self.sequence_parallel:
+            # The seq-parallel `g`: reduce across TP partitions and scatter back to a sequence shard.
+            output = ReduceScatterToSequenceParallelRegion.apply(output_parallel)
+        else:
+            # All-reduce across all the partitions.
+            output = ReduceFromModelParallelRegion.apply(output_parallel)
         return output if self.bias is None else output + self.bias
 
 
@@ -212,11 +247,13 @@ class VocabParallelEmbedding(nn.Module):
         norm_type: float = 2.0,
         scale_grad_by_freq: bool = False,
         sparse: bool = False,
+        sequence_parallel: bool = False,
     ):
         super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank
+        self.sequence_parallel = sequence_parallel
 
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
@@ -281,5 +318,10 @@ class VocabParallelEmbedding(nn.Module):
         )
         # Embedding of out-of-vocabulary tokens is set to 0.
         output_parallel[input_mask, :] = 0.0
-        output = ReduceFromModelParallelRegion.apply(output_parallel)
+        if self.sequence_parallel:
+            # Reduce the per-rank lookups and scatter to a sequence shard, so the rest of the network
+            # runs on sequence-parallel activations.
+            output = ReduceScatterToSequenceParallelRegion.apply(output_parallel)
+        else:
+            output = ReduceFromModelParallelRegion.apply(output_parallel)
         return output

@@ -123,3 +123,70 @@ def linear_with_all_reduce(x, weight, bias):
 
 def linear_with_async_all_reduce(x, weight, bias):
     return LinearWithAsyncAllReduce.apply(x, weight, bias)
+
+
+# ---------------------------------------------------------------------------
+# Vocab-parallel cross-entropy (Megatron `vocab_parallel_cross_entropy`).
+#
+# The output projection is column-parallel over the vocabulary, so each rank holds a [N, V/tp] slice
+# of the logits (N = tokens). Instead of all-gathering the full [N, V] logits (huge for large V) and
+# running a dense softmax on every rank, we compute the loss directly on the shards and exchange only
+# per-token scalars: the max logit, the sum of exp, and the target logit. Communication drops from
+# O(V) to O(1) per token, and the full logits are never materialized.
+# ---------------------------------------------------------------------------
+class _VocabParallelCrossEntropy(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, vocab_parallel_logits: torch.Tensor, target: torch.Tensor):
+        group = pgm.process_group_manager.tp_group
+        tp_rank = pgm.process_group_manager.tp_rank
+        tp_world_size = pgm.process_group_manager.tp_world_size
+        partition_vocab_size = vocab_parallel_logits.size(-1)
+        vocab_start = tp_rank * partition_vocab_size
+        vocab_end = vocab_start + partition_vocab_size
+
+        # 1) Global max per token (for numerical stability), then shift the logits.
+        logits_max = vocab_parallel_logits.max(dim=-1).values
+        if tp_world_size > 1:
+            dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
+        logits = vocab_parallel_logits - logits_max.unsqueeze(-1)
+
+        # 2) Gather this rank's contribution to the target logit (0 where the target is off-shard).
+        target_mask = (target < vocab_start) | (target >= vocab_end)
+        local_target = target.clone() - vocab_start
+        local_target[target_mask] = 0
+        predicted_logits = logits.gather(-1, local_target.unsqueeze(-1)).squeeze(-1)
+        predicted_logits[target_mask] = 0.0
+        if tp_world_size > 1:
+            dist.all_reduce(predicted_logits, op=dist.ReduceOp.SUM, group=group)
+
+        # 3) Global sum of exp over the full vocabulary.
+        exp_logits = torch.exp(logits)
+        sum_exp = exp_logits.sum(dim=-1)
+        if tp_world_size > 1:
+            dist.all_reduce(sum_exp, op=dist.ReduceOp.SUM, group=group)
+
+        # loss = log(sum exp(z - max)) - (z_target - max)
+        loss = torch.log(sum_exp) - predicted_logits
+
+        # softmax (for backward): exp_logits / sum_exp.
+        exp_logits.div_(sum_exp.unsqueeze(-1))
+        ctx.save_for_backward(exp_logits, target_mask, local_target)
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        softmax, target_mask, local_target = ctx.saved_tensors
+        grad_input = softmax
+        # grad = softmax - onehot(target); subtract 1 at the target position (only on the owning rank).
+        keep = (~target_mask).float()
+        grad_input.scatter_add_(
+            -1, local_target.unsqueeze(-1), -keep.unsqueeze(-1).to(grad_input.dtype)
+        )
+        grad_input.mul_(grad_output.unsqueeze(-1))
+        return grad_input, None
+
+
+def vocab_parallel_cross_entropy(vocab_parallel_logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Per-token cross-entropy on vocab-sharded logits. `vocab_parallel_logits`: [..., V/tp], `target`:
+    [...] global vocab ids. Returns per-token loss [...] (reduce with `.mean()` like F.cross_entropy)."""
+    return _VocabParallelCrossEntropy.apply(vocab_parallel_logits, target)

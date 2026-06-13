@@ -18,7 +18,7 @@ except ImportError:
     layer_norm_fn = None
 
 import picotron.process_group_manager as pgm
-from picotron.context_parallel import context_parallel
+from picotron.context_parallel import context_parallel, ulysses
 from picotron.expert_parallel.expert_parallel import MoELayer
 
 
@@ -156,6 +156,9 @@ class Attention(nn.Module):
         q = self.q_proj(x)  # [batch_size, seq_length, num_heads*head_dim]
         k = self.k_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
         v = self.v_proj(x)  # [batch_size, seq_length, num_key_values*head_dim]
+        # Under sequence parallelism the column-parallel projections all-gather the sequence, so the
+        # post-projection length is the *full* sequence (== seq_length when sequence parallelism is off).
+        seq_length = q.size(1)
         if os.getenv("FLASH_ATTEN", "1") != "1":
             q = q.view(batch_size, seq_length, self.num_local_heads, self.head_dim).transpose(
                 1, 2
@@ -198,11 +201,17 @@ class Attention(nn.Module):
 
         # TODO: replace everything with flex attention
         if os.getenv("CONTEXT_PARALLEL", "0") == "1":
-            # Ring attention for context parallelism
-            sm_scale = 1.0 / (q.size(-1) ** 0.5)
-            out = context_parallel.ring_attention(q, k, v, sm_scale, causal).transpose(
-                1, 2
-            )  # [batch_size, seq_length, num_heads, head_dim]
+            if os.getenv("CP_ATTENTION", "ring") == "ulysses":
+                # DeepSpeed-Ulysses: all-to-all to head-parallel, local attention, all-to-all back
+                out = ulysses.ulysses_attention(q, k, v, causal).transpose(
+                    1, 2
+                )  # [batch_size, seq_length, num_heads, head_dim]
+            else:
+                # Ring attention for context parallelism
+                sm_scale = 1.0 / (q.size(-1) ** 0.5)
+                out = context_parallel.ring_attention(q, k, v, sm_scale, causal).transpose(
+                    1, 2
+                )  # [batch_size, seq_length, num_heads, head_dim]
         elif os.getenv("FLASH_ATTEN", "1") == "1":
             # flash attention, this is faster!
             out = flash_attention(q, k, v, causal=causal)  # [batch_size, seq_length, num_heads, head_dim]

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="30" font-size="18" fill="#28323b" font-weight="bold">Sequence parallelism: shard the norm / residual regions along the sequence</text>
+
+  <defs>
+    <marker id="sp" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#2f7da6"/></marker>
+  </defs>
+
+  <text x="20" y="78" font-size="14" fill="#b05a4f" font-weight="bold">plain TP</text>
+  <rect x="120" y="58" width="160" height="40" rx="6" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="200" y="83" text-anchor="middle" font-size="12" fill="#7a352e">norm + residual</text>
+  <text x="200" y="112" text-anchor="middle" font-size="11" fill="#8a97a0">[b, s, h] replicated on every rank</text>
+
+  <rect x="340" y="58" width="200" height="40" rx="6" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+  <text x="440" y="83" text-anchor="middle" font-size="12" fill="#2f7da6">TP block (col, row)</text>
+  <circle cx="600" cy="78" r="20" fill="#fff3d6" stroke="#c79a2b" stroke-width="2"/>
+  <text x="600" y="83" text-anchor="middle" font-size="13" fill="#9c7a1f" font-weight="bold">g</text>
+  <text x="600" y="112" text-anchor="middle" font-size="11" fill="#9c7a1f">all-reduce</text>
+  <rect x="660" y="58" width="160" height="40" rx="6" fill="#fbecea" stroke="#b05a4f" stroke-width="2"/>
+  <text x="740" y="83" text-anchor="middle" font-size="12" fill="#7a352e">norm + residual</text>
+
+  <line x1="280" y1="78" x2="338" y2="78" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+  <line x1="540" y1="78" x2="578" y2="78" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+  <line x1="620" y1="78" x2="658" y2="78" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+
+  <line x1="20" y1="150" x2="980" y2="150" stroke="#dfe6ea" stroke-width="1.5"/>
+
+  <text x="20" y="205" font-size="14" fill="#3a9d5d" font-weight="bold">+ seqpar</text>
+  <rect x="120" y="180" width="160" height="44" rx="6" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="200" y="200" text-anchor="middle" font-size="12" fill="#256b3f">norm + residual</text>
+  <text x="200" y="216" text-anchor="middle" font-size="11" fill="#256b3f">[b, s/tp, h] sharded</text>
+  <text x="200" y="244" text-anchor="middle" font-size="11" fill="#8a97a0">tp x smaller</text>
+
+  <circle cx="320" cy="202" r="18" fill="#fff3d6" stroke="#c79a2b" stroke-width="2"/>
+  <text x="320" y="206" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">AG</text>
+  <text x="320" y="262" text-anchor="middle" font-size="10" fill="#9c7a1f">all-gather (f)</text>
+
+  <rect x="360" y="180" width="180" height="44" rx="6" fill="#f4f8fb" stroke="#2f7da6" stroke-width="2"/>
+  <text x="450" y="200" text-anchor="middle" font-size="12" fill="#2f7da6">TP block (col, row)</text>
+  <text x="450" y="216" text-anchor="middle" font-size="11" fill="#8a97a0">[b, s, h/tp] full seq</text>
+
+  <circle cx="580" cy="202" r="18" fill="#fff3d6" stroke="#c79a2b" stroke-width="2"/>
+  <text x="580" y="206" text-anchor="middle" font-size="11" fill="#9c7a1f" font-weight="bold">RS</text>
+  <text x="580" y="262" text-anchor="middle" font-size="10" fill="#9c7a1f">reduce-scatter (g)</text>
+
+  <rect x="620" y="180" width="160" height="44" rx="6" fill="#e8f5ed" stroke="#3a9d5d" stroke-width="2"/>
+  <text x="700" y="200" text-anchor="middle" font-size="12" fill="#256b3f">norm + residual</text>
+  <text x="700" y="216" text-anchor="middle" font-size="11" fill="#256b3f">[b, s/tp, h] sharded</text>
+
+  <line x1="280" y1="202" x2="300" y2="202" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+  <line x1="338" y1="202" x2="358" y2="202" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+  <line x1="540" y1="202" x2="560" y2="202" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+  <line x1="598" y1="202" x2="618" y2="202" stroke="#2f7da6" stroke-width="2.5" marker-end="url(#sp)"/>
+
+  <rect x="120" y="300" width="760" height="56" rx="8" fill="#f7f9fa" stroke="#cdd6db"/>
+  <text x="500" y="324" text-anchor="middle" font-size="14" fill="#28323b" font-weight="bold">all-reduce = reduce-scatter + all-gather   =&gt;   same bytes on the wire, but the stream is tp x smaller</text>
+  <text x="500" y="344" text-anchor="middle" font-size="12" fill="#8a97a0">the fused col-parallel linear checkpoints only the s/tp input and re-gathers in backward; that is what frees the memory</text>
+</svg>
