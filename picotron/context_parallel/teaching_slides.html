@@ -82,9 +82,9 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="13">
 <h2 id="what-we-are-parallelizing">What we are parallelizing</h2>
-<p>TP shards the hidden dim, SP shards the norm/residual regions, but the <strong>attention score matrix is still<br />
+<p>TP shards the hidden dim, SP shards the norm/residual regions, but the <strong>attention score matrix is still
 <code>O(S^2)</code> per head</strong>. Past some sequence length, one GPU cannot hold the activations.</p>
-<p>Context parallelism shards the <strong>sequence itself</strong> across a dedicated grid axis (<code>cp</code>): each rank holds<br />
+<p>Context parallelism shards the <strong>sequence itself</strong> across a dedicated grid axis (<code>cp</code>): each rank holds
 <code>S/cp</code> tokens.</p>
 <ul>
 <li>a real axis in <code>DP x PP x CP x EP x TP</code>, with its <strong>own process group</strong> (<code>cp_group</code>)</li>
@@ -222,7 +222,7 @@ section::after { font-size: 16px; }
   <text x="140" y="366" font-size="13" fill="#28323b" font-weight="bold">Trade-off</text>
   <text x="140" y="388" font-size="12" fill="#48606e">- Ulysses: 2 all-to-alls per attention, length-independent; dense kernel composes with flash. Faster on a node.</text>
   <text x="140" y="408" font-size="12" fill="#48606e">- Ulysses limit: needs num_heads (per TP rank) divisible by cp -- cannot scale past the head count.</text>
-  <text x="140" y="428" font-size="12" fill="#48606e">- Ring: P2P, no head-count limit, scales to very long sequences; here it is a python online-softmax reference.</text>
+  <text x="140" y="428" font-size="12" fill="#48606e">- Ring: P2P, no head-count limit, scales to very long sequences; flash kernel per block (FLASH_ATTEN=1).</text>
 </svg></div>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-theme="gaia" data-style="section {
@@ -318,8 +318,8 @@ a2a  [b, num_heads/cp, S,    d]    head sharded, full seq   (scatter heads, gath
 attn standard dense / flash attention, this rank's heads, full sequence
 a2a  [b, num_heads,    S/cp, d]    back to sequence sharded (scatter seq, gather heads)
 </code></pre>
-<p>Same elements reshuffled (<code>num_heads/cp * S == num_heads * S/cp</code>) -&gt; per-rank size unchanged. The<br />
-attention is a <strong>normal kernel</strong>: composes with flash, no online softmax. Comm = 2 all-to-alls,<br />
+<p>Same elements reshuffled (<code>num_heads/cp * S == num_heads * S/cp</code>) -&gt; per-rank size unchanged. The
+attention is a <strong>normal kernel</strong>: composes with flash, no online softmax. Comm = 2 all-to-alls,
 <strong>independent of sequence length</strong>.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-theme="gaia" data-style="section {
@@ -354,7 +354,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="13">
 <h2 id="the-backward-is-the-same-collective">The backward is the same collective</h2>
-<p>An all-to-all's transpose is another all-to-all with scatter/gather dims swapped -- one tiny autograd<br />
+<p>An all-to-all's transpose is another all-to-all with scatter/gather dims swapped -- one tiny autograd
 function covers both directions:</p>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">class</span> <span class="hljs-title class_">_SeqAllToAll</span>(torch.autograd.Function):
 <span class="hljs-meta">    @staticmethod</span>
@@ -366,7 +366,7 @@ function covers both directions:</p>
     <span class="hljs-keyword">def</span> <span class="hljs-title function_">backward</span>(<span class="hljs-params">ctx, grad</span>):
         <span class="hljs-keyword">return</span> (<span class="hljs-literal">None</span>, _all_to_all(grad, ctx.gather_dim, ctx.scatter_dim, ctx.group), <span class="hljs-literal">None</span>, <span class="hljs-literal">None</span>)
 </code></pre>
-<p><strong>The limit:</strong> <code>num_heads</code> (per TP rank) must be divisible by <code>cp</code> -- Ulysses cannot scale CP past the<br />
+<p><strong>The limit:</strong> <code>num_heads</code> (per TP rank) must be divisible by <code>cp</code> -- Ulysses cannot scale CP past the
 head count. GQA is expanded upstream, so K/V head count is never the constraint.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-theme="gaia" data-style="section {
@@ -403,7 +403,7 @@ section::after { font-size: 16px; }
 <h2 id="correctness-bit-exact">Correctness (bit-exact)</h2>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-bash">CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_cp_ulysses.py
 </code></pre>
-<p>Full-sequence single-GPU reference vs sequence-sharded Ulysses. Every param is replicated and each rank<br />
+<p>Full-sequence single-GPU reference vs sequence-sharded Ulysses. Every param is replicated and each rank
 sees one token shard, so gradients are partial sums -&gt; sum over the CP group recovers the reference.</p>
 <table>
 <thead>

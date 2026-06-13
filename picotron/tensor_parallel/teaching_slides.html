@@ -82,7 +82,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="15">
 <h2 id="what-we-are-parallelizing">What we are parallelizing</h2>
-<p>A transformer block is two GEMM sandwiches: <strong>attention</strong> (<code>q,k,v → attn → out</code>) and <strong>MLP</strong><br />
+<p>A transformer block is two GEMM sandwiches: <strong>attention</strong> (<code>q,k,v → attn → out</code>) and <strong>MLP</strong>
 (<code>up,gate → act → down</code>). Tensor parallelism splits those matmuls <em>inside</em> the layer across the TP group.</p>
 <ul>
 <li>splits <strong>within</strong> a layer ⇒ a collective <strong>every</strong> layer ⇒ lives on NVLink, TP degree kept small (≤ 8)</li>
@@ -208,7 +208,7 @@ section::after { font-size: 16px; }
     <span class="hljs-keyword">def</span> <span class="hljs-title function_">forward</span>(<span class="hljs-params">ctx, x</span>):  all_reduce(x); <span class="hljs-keyword">return</span> x        <span class="hljs-comment"># all-reduce</span>
     <span class="hljs-keyword">def</span> <span class="hljs-title function_">backward</span>(<span class="hljs-params">ctx, g</span>): <span class="hljs-keyword">return</span> g                       <span class="hljs-comment"># copy</span>
 </code></pre>
-<p>The embedding is sharded over the <strong>vocabulary</strong> (<code>VocabParallelEmbedding</code>): mask off-shard tokens,<br />
+<p>The embedding is sharded over the <strong>vocabulary</strong> (<code>VocabParallelEmbedding</code>): mask off-shard tokens,
 look up, all-reduce. This is the correct Megatron-v1 TP that already ships in picotron.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-theme="gaia" data-style="section {
@@ -305,7 +305,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="15">
 <h2 id="rung-1--async-communication-overlap">Rung 1 — async communication overlap</h2>
-<p>The column-parallel backward owes the previous layer <code>grad_x = grad_y · W</code> (all-reduced) <strong>and</strong> the<br />
+<p>The column-parallel backward owes the previous layer <code>grad_x = grad_y · W</code> (all-reduced) <strong>and</strong> the
 local weight grad. Launch the <code>grad_x</code> all-reduce <strong>first</strong>, compute <code>grad_W</code> while it flies:</p>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python">grad_input = grad_output @ weight
 handle = dist.all_reduce(grad_input, async_op=<span class="hljs-literal">True</span>)   <span class="hljs-comment"># launch, don&#x27;t wait</span>
@@ -349,7 +349,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="15">
 <h2 id="rung-2--sequence-parallelism">Rung 2 — sequence parallelism</h2>
-<p>Between blocks (norm + residual) activations are <strong>replicated</strong> → that memory ignores TP. Shard them<br />
+<p>Between blocks (norm + residual) activations are <strong>replicated</strong> → that memory ignores TP. Shard them
 along the <strong>sequence</strong> instead:</p>
 <div style="text-align:center"><svg width="860" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" font-family="Helvetica, Arial, sans-serif">
   <text x="20" y="30" font-size="18" fill="#28323b" font-weight="bold">Sequence parallelism: shard the norm / residual regions along the sequence</text>
@@ -430,9 +430,9 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="15">
 <h2 id="rung-2--the-subtlety-that-decides-the-win">Rung 2 — the subtlety that decides the win</h2>
-<p>A naive <code>all_gather</code> + <code>F.linear</code> <strong>loses</strong> the memory win: autograd saves the <em>gathered</em> full-sequence<br />
+<p>A naive <code>all_gather</code> + <code>F.linear</code> <strong>loses</strong> the memory win: autograd saves the <em>gathered</em> full-sequence
 input for the weight-grad, so the biggest activation is still full-size on every rank.</p>
-<p><strong>Fix (Megatron):</strong> a fused gather+linear that checkpoints only the <strong>sharded</strong> input and re-gathers in<br />
+<p><strong>Fix (Megatron):</strong> a fused gather+linear that checkpoints only the <strong>sharded</strong> input and re-gathers in
 backward.</p>
 <pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-python"><span class="hljs-keyword">class</span> <span class="hljs-title class_">_ColumnParallelLinearWithSequenceParallel</span>(<span class="hljs-title class_ inherited__">Function</span>):
     <span class="hljs-keyword">def</span> <span class="hljs-title function_">forward</span>(<span class="hljs-params">ctx, x_sharded, w, b</span>):
@@ -479,7 +479,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="15">
 <h2 id="rung-3--vocab-parallel-cross-entropy">Rung 3 — vocab-parallel cross-entropy</h2>
-<p>The output projection is already column-parallel over the vocab. The stock path all-gathers the full<br />
+<p>The output projection is already column-parallel over the vocab. The stock path all-gathers the full
 <code>[b,s,V]</code> logits and runs a dense softmax on every rank — the biggest activation in the step.</p>
 <div style="text-align:center"><svg width="840" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 350" font-family="Helvetica, Arial, sans-serif">
   <text x="20" y="30" font-size="18" fill="#28323b" font-weight="bold">Vocab-parallel cross-entropy: never gather the [b, s, V] logits</text>
@@ -518,7 +518,7 @@ section::after { font-size: 16px; }
   <text x="800" y="245" font-size="12" fill="#3a9d5d">comm = O(1) / token</text>
   <text x="500" y="312" text-anchor="middle" font-size="14" fill="#8a97a0">The full logits never exist on any rank; for a 32k-128k vocab this is the single biggest activation saved.</text>
 </svg></div>
-<p>Keep logits sharded; exchange only per-token <strong>max</strong>, <strong>Σexp</strong>, <strong>target logit</strong>. <code>O(V) → O(1)</code> comm,<br />
+<p>Keep logits sharded; exchange only per-token <strong>max</strong>, <strong>Σexp</strong>, <strong>target logit</strong>. <code>O(V) → O(1)</code> comm,
 full logits never materialized. Backward is the saved-softmax <code>softmax − onehot(target)</code>.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="10" data-paginate="true" data-theme="gaia" data-style="section {
@@ -706,13 +706,13 @@ section::after { font-size: 16px; }
 <div class="cols">
 <div>
 <h3 id="sequence-parallelism">Sequence parallelism</h3>
-<p>A <strong>memory</strong> lever, not a speed one. 1.23× less memory by sharding the residual stream; the extra<br />
-reduce-scatter / all-gather <em>calls</em> cost ~10% on a single NVLink node at TP=2. Pays off more at higher<br />
+<p>A <strong>memory</strong> lever, not a speed one. 1.23× less memory by sharding the residual stream; the extra
+reduce-scatter / all-gather <em>calls</em> cost ~10% on a single NVLink node at TP=2. Pays off more at higher
 TP / across nodes (and unlocks not recomputing those regions).</p>
 </div>
 <div>
 <h3 id="vocab-parallel-ce">Vocab-parallel CE</h3>
-<p><strong>Nearly free</strong> — 1.12–1.14× memory at neutral speed. Kills the <code>[b,s,V]</code> gather + dense softmax for a<br />
+<p><strong>Nearly free</strong> — 1.12–1.14× memory at neutral speed. Kills the <code>[b,s,V]</code> gather + dense softmax for a
 few <code>[b,s]</code> all-reduces; helps more as the vocab grows.</p>
 <h3 id="async-overlap">Async overlap</h3>
 <p>Small win here (1.02×); grows with the weight-grad GEMM vs all-reduce latency.</p>

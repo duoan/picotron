@@ -48,7 +48,7 @@ section::after { font-size: 16px; }
 <h1 id="expert-parallelism-from-scratch">Expert Parallelism, from scratch</h1>
 <h2 id="a-custom-expert_parallel-module-i-built-on-top-of-picotron">A custom <code>expert_parallel</code> module I built on top of <code>picotron</code></h2>
 <p>From a naive all-to-all to DeepEP, tiled pipelines, FP8, LatentMoE — and what it takes to actually <em>train</em> at scale</p>
-<p><span class="muted">extending picotron (DP·PP·CP·TP) with a 5th axis — expert parallelism — and a stack of MoE comm optimizations</span><br />
+<p><span class="muted">extending picotron (DP·PP·CP·TP) with a 5th axis — expert parallelism — and a stack of MoE comm optimizations</span>
 <span class="muted">deep dive: autograd · CUDA streams · Triton kernels · the bandwidth lesson</span></p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="2" data-paginate="true" data-theme="gaia" data-style="section {
@@ -177,7 +177,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="38">
 <h2 id="ep-tokens-travel-to-their-expert-and-back">EP: tokens travel to their expert and back</h2>
-<p><strong>Expert Parallelism:</strong> shard the <code>E</code> experts across ranks — rank <code>r</code> owns <code>[r·L, (r+1)·L)</code>, <code>L = E/ep_size</code>.<br />
+<p><strong>Expert Parallelism:</strong> shard the <code>E</code> experts across ranks — rank <code>r</code> owns <code>[r·L, (r+1)·L)</code>, <code>L = E/ep_size</code>.
 A token routed to a remote expert needs <strong>two all-to-alls</strong>: dispatch out, combine back.</p>
 <div style="text-align:center"><svg width="680" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" font-family="Helvetica, Arial, sans-serif">
   <defs>
@@ -264,7 +264,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="38">
 <h2 id="ep-the-5th-axis-i-added-to-picotron">EP: the 5th axis I added to picotron</h2>
-<p>Stock picotron is <strong><code>DP × PP × CP × TP</code></strong> (4D). I extended its process-group<br />
+<p>Stock picotron is <strong><code>DP × PP × CP × TP</code></strong> (4D). I extended its process-group
 manager to a 5D grid <strong><code>DP × PP × CP × EP × TP</code></strong> and added the MoE layer that uses it.</p>
 <table>
 <thead>
@@ -326,7 +326,7 @@ section img { display: block; margin: 0.2em auto; }
 section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="38">
 <h2 id="the-challenge-sparsity-breaks-the-dense-playbook">The challenge: sparsity breaks the dense playbook</h2>
-<p><strong>Dense:</strong> every param fires every token → params and compute scale together; sharding keeps comm small.<br />
+<p><strong>Dense:</strong> every param fires every token → params and compute scale together; sharding keeps comm small.
 <strong>MoE:</strong> only <code>k</code> of <code>E</code> experts fire → total params grow far faster than per-token compute = a <strong>parameter–compute mismatch</strong>.</p>
 <blockquote>
 <p>DeepSeek-V3: <strong>685B</strong> total / <strong>37B</strong> active = <strong>18×</strong>  ·  Kimi-K2 = <strong>31×</strong></p>
@@ -420,10 +420,10 @@ section::after { font-size: 16px; }
 <div class="cols">
 <div>
 <h3 id="memory">Memory</h3>
-<p>All <code>E</code> experts' <strong>params + grads + optimizer</strong> stay resident, though only <code>k</code> fire. Relieving it<br />
+<p>All <code>E</code> experts' <strong>params + grads + optimizer</strong> stay resident, though only <code>k</code> fire. Relieving it
 just <strong>moves the cost</strong> (shard→BW, recompute→FLOPs, offload→PCIe). Dynamic routing → <strong>memory spikes</strong>.</p>
 <h3 id="communication">Communication</h3>
-<p>dispatch+combine all-to-all, <code>≈ T·k·h·(EP−1)/EP</code> each way. As EP grows it leaves NVLink for<br />
+<p>dispatch+combine all-to-all, <code>≈ T·k·h·(EP−1)/EP</code> each way. As EP grows it leaves NVLink for
 <strong>inter-node links (~10× slower)</strong>, and sparse compute leaves <strong>little to overlap</strong> → <strong>20–60%</strong> of the step.</p>
 </div>
 <div>
@@ -436,7 +436,7 @@ just <strong>moves the cost</strong> (shard→BW, recompute→FLOPs, offload→P
 </ul>
 </div>
 </div>
-<p><strong>They're coupled</strong> — fix one, pressure shifts: bigger batch helps GEMMs but ↑memory &amp; comm; CUDA<br />
+<p><strong>They're coupled</strong> — fix one, pressure shifts: bigger batch helps GEMMs but ↑memory &amp; comm; CUDA
 Graphs need static shapes (vs dropless); grouping helps compute but complicates balancing.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-theme="gaia" data-style="section {
@@ -493,7 +493,7 @@ section::after { font-size: 16px; }
 </tr>
 </tbody>
 </table>
-<p>We start with the <strong>Communication Wall</strong> — the one EP creates — then return to <strong>Memory</strong> and<br />
+<p>We start with the <strong>Communication Wall</strong> — the one EP creates — then return to <strong>Memory</strong> and
 <strong>Compute</strong> in <em>Beyond speed</em>. Throughline: <strong>measure <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>=</mo><msub><mi>t</mi><mtext>comm</mtext></msub><mi mathvariant="normal">/</mi><msub><mi>t</mi><mtext>compute</mtext></msub></mrow><annotation encoding="application/x-tex">\rho = t_\text{comm}/t_\text{compute}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0361em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">comm</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">/</span><span class="mord"><span class="mord mathnormal">t</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">compute</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span></strong>, then spend effort where the wall actually is.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-theme="gaia" data-style="section {
@@ -884,7 +884,7 @@ section::after { font-size: 16px; }
 ;" data-marpit-pagination-total="38">
 <h2 id="opt-2--tiled-backward-the-hard-part">Opt 2 — tiled backward (the hard part)</h2>
 <blockquote>
-<p>MegaScale-MoE's lesson, re-discovered the hard way:<br />
+<p>MegaScale-MoE's lesson, re-discovered the hard way:
 <strong>do not implement the MoE backward with <code>torch.autograd</code>.</strong></p>
 </blockquote>
 <p>A first version calling <code>torch.autograd.grad</code> twice per tile regressed the full step to <strong>0.87×</strong>.</p>
@@ -981,7 +981,7 @@ section::after { font-size: 16px; }
 expert_out = <span class="hljs-variable language_">self</span>._deepep_experts(recv_x, recv_idx, recv_w)   <span class="hljs-comment"># grouped FFN + gate weights</span>
 y = deepep_backend.combine(group, expert_out, handle)         <span class="hljs-comment"># sum per-rank contributions</span>
 </code></pre>
-<p><code>dispatch</code> and <code>combine</code> are <strong>linear transposes</strong> ⇒ autograd backward of one <strong>is</strong> the other.<br />
+<p><code>dispatch</code> and <code>combine</code> are <strong>linear transposes</strong> ⇒ autograd backward of one <strong>is</strong> the other.
 Gate weights ride a non-differentiable transport (router grad flows the normal way).</p>
 <p><strong>Always safe:</strong> on A100 (sm_80) <code>deepep_available()</code> is False → transparent fallback to torch.</p>
 </section>
@@ -1020,13 +1020,13 @@ section::after { font-size: 16px; }
 <p>Overlap hides the a2a. But if <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo>≪</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\rho \ll 1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">ρ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≪</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span>, or you're already hiding everything, the next lever is <strong>fewer bytes on the wire</strong>.</p>
 <div class="cols">
 <div>
-<p><strong>FP8 dispatch</strong><br />
-<code>2 B → ~1 B</code> per element.<br />
+<p><strong>FP8 dispatch</strong>
+<code>2 B → ~1 B</code> per element.
 Comm-bound win.</p>
 </div>
 <div>
-<p><strong>LatentMoE</strong><br />
-route/compute in dim <code>l ≪ d</code>.<br />
+<p><strong>LatentMoE</strong>
+route/compute in dim <code>l ≪ d</code>.
 Cuts comm <strong>and</strong> FLOPs.</p>
 </div>
 </div>
@@ -1363,7 +1363,7 @@ section::after { font-size: 16px; }
 </tr>
 </tbody>
 </table>
-<p>Even a 537 MB payload moves dispatch+combine (~1 GB) in <strong>~3.6 ms</strong> = <strong>~4.5 % of the step</strong>.<br />
+<p>Even a 537 MB payload moves dispatch+combine (~1 GB) in <strong>~3.6 ms</strong> = <strong>~4.5 % of the step</strong>.
 Nothing to hide → per-tile overhead <strong>regresses</strong> it. <strong>Default <code>ep_num_tiles=1</code> on NVLink.</strong></p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="23" data-paginate="true" data-theme="gaia" data-style="section {
@@ -1702,12 +1702,12 @@ section::after { font-size: 16px; }
 <div class="cols">
 <div>
 <h3 id="memory-wall-%E2%86%92-memory-swings">Memory Wall → memory swings</h3>
-<p>The router decides per-expert counts <strong>every step</strong>. Dropless buffers track them → activation memory<br />
+<p>The router decides per-expert counts <strong>every step</strong>. Dropless buffers track them → activation memory
 fluctuates → allocator <strong>fragmentation &amp; OOM</strong> at scale.</p>
 </div>
 <div>
 <h3 id="compute-wall-%E2%86%92-expert-collapse">Compute Wall → expert collapse</h3>
-<p>A trained router with no balancing pressure piles tokens onto a <strong>few</strong> experts → the rest sit idle<br />
+<p>A trained router with no balancing pressure piles tokens onto a <strong>few</strong> experts → the rest sit idle
 (wasted GEMMs); capacity (below) then <strong>drops</strong> the overflow.</p>
 </div>
 </div>
@@ -1902,11 +1902,11 @@ section::after { font-size: 16px; }
 </svg></div>
 <div class="cols">
 <div>
-<p><strong>Aux loss</strong> (Switch / DeepSeek) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>L</mi><mtext>aux</mtext></msub><mo>=</mo><mi>α</mi><msub><mo>∑</mo><mi>e</mi></msub><msub><mi>f</mi><mi>e</mi></msub><msub><mi>P</mi><mi>e</mi></msub></mrow><annotation encoding="application/x-tex">L_\text{aux} = \alpha \sum_e f_e P_e</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">aux</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0497em;vertical-align:-0.2997em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.0017em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1076em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><br />
+<p><strong>Aux loss</strong> (Switch / DeepSeek) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>L</mi><mtext>aux</mtext></msub><mo>=</mo><mi>α</mi><msub><mo>∑</mo><mi>e</mi></msub><msub><mi>f</mi><mi>e</mi></msub><msub><mi>P</mi><mi>e</mi></msub></mrow><annotation encoding="application/x-tex">L_\text{aux} = \alpha \sum_e f_e P_e</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord text mtight"><span class="mord mtight">aux</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0497em;vertical-align:-0.2997em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.0017em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1076em;">f</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1076em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span>
 differentiable → grad to the gate; <code>collect_aux_loss</code> adds it to the loss.</p>
 </div>
 <div>
-<p><strong>Loss-free bias</strong> (DeepSeek-V3) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>b</mi><mi>e</mi></msub><mo>+</mo><mo>=</mo><mi>η</mi><mtext> </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><mover accent="true"><mi>L</mi><mo>ˉ</mo></mover><mo>−</mo><msub><mi>L</mi><mi>e</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">b_e \mathrel{+}= \eta\,\mathrm{sign}(\bar{L}-L_e)</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel"><span class="mord">+</span></span></span><span class="base"><span class="strut" style="height:0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0701em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0359em;">η</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathrm">sign</span></span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8201em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">L</span></span><span style="top:-3.2523em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2222em;"><span class="mord">ˉ</span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">)</span></span></span></span><br />
+<p><strong>Loss-free bias</strong> (DeepSeek-V3) — <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>b</mi><mi>e</mi></msub><mo>+</mo><mo>=</mo><mi>η</mi><mtext> </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><mover accent="true"><mi>L</mi><mo>ˉ</mo></mover><mo>−</mo><msub><mi>L</mi><mi>e</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">b_e \mathrel{+}= \eta\,\mathrm{sign}(\bar{L}-L_e)</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel"><span class="mord">+</span></span></span><span class="base"><span class="strut" style="height:0.3669em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.0701em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0359em;">η</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathrm">sign</span></span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8201em;"><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord mathnormal">L</span></span><span style="top:-3.2523em;"><span class="pstrut" style="height:3em;"></span><span class="accent-body" style="left:-0.2222em;"><span class="mord">ˉ</span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathnormal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.1514em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">e</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">)</span></span></span></span>
 biases <strong>selection only</strong>: no grad, no tug-of-war with the LM loss.</p>
 </div>
 </div>
@@ -2128,7 +2128,7 @@ section::after { font-size: 16px; }
 </div>
 <div>
 <h3 id="latentmoe">LatentMoE</h3>
-<p><strong>Compute-bound win too.</strong> Cuts FLOPs, so it pays off <strong>even on NVLink</strong> (2.14×).<br />
+<p><strong>Compute-bound win too.</strong> Cuts FLOPs, so it pays off <strong>even on NVLink</strong> (2.14×).
 The one lever that doesn't need a comm bottleneck.</p>
 <h3 id="fp8-dispatch">FP8 dispatch</h3>
 <p>Comm-bound like overlap (+7% off-NVLink, slight regression on NVLink).</p>

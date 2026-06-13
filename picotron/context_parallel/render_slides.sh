@@ -52,8 +52,19 @@ if [ -z "${CHROME_PATH:-}" ] || [ ! -x "${CHROME_PATH:-}" ]; then
 fi
 export CHROME_PATH PUPPETEER_SKIP_DOWNLOAD=1
 
+# Marp Core defaults markdown-it to breaks:true (GitHub-style), so every single newline in a
+# hard-wrapped paragraph becomes a <br> -> ugly mid-sentence breaks in the slides. Force standard
+# CommonMark soft wrapping (newline == space, text reflows). Use an explicit <br> if a break is wanted.
+CONF=$(mktemp --suffix=.yml)
+trap 'rm -f "$TMP" "$CONF"' EXIT
+cat > "$CONF" <<'YML'
+options:
+  markdown:
+    breaks: false
+YML
+
 for fmt in html pdf pptx; do
-  npx -y @marp-team/marp-cli@latest --no-stdin --html --allow-local-files \
+  npx -y @marp-team/marp-cli@latest --no-stdin --html --allow-local-files --config "$CONF" \
     --"$fmt" "$TMP" -o "teaching_slides.$fmt" < /dev/null
 done
 echo "rendered: teaching_slides.{html,pdf,pptx}"

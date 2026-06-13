@@ -58,5 +58,5 @@
   <text x="140" y="366" font-size="13" fill="#28323b" font-weight="bold">Trade-off</text>
   <text x="140" y="388" font-size="12" fill="#48606e">- Ulysses: 2 all-to-alls per attention, length-independent; dense kernel composes with flash. Faster on a node.</text>
   <text x="140" y="408" font-size="12" fill="#48606e">- Ulysses limit: needs num_heads (per TP rank) divisible by cp -- cannot scale past the head count.</text>
-  <text x="140" y="428" font-size="12" fill="#48606e">- Ring: P2P, no head-count limit, scales to very long sequences; here it is a python online-softmax reference.</text>
+  <text x="140" y="428" font-size="12" fill="#48606e">- Ring: P2P, no head-count limit, scales to very long sequences; flash kernel per block (FLASH_ATTEN=1).</text>
 </svg>
