@@ -20,6 +20,10 @@ except ImportError:
 import picotron.process_group_manager as pgm
 from picotron.context_parallel import context_parallel, ulysses
 from picotron.expert_parallel.expert_parallel import MoELayer
+from picotron.sequence_parallel.sequence_parallel import (
+    GatherFromSequenceParallelRegion,
+    ReduceScatterToSequenceParallelRegion,
+)
 
 
 def apply_rotary_pos_emb(x, cos, sin):
@@ -282,12 +286,20 @@ class FinalProjection(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    # RMSNorm -> Attention -> Residual -> RMSNorm -> MLP -> Residual
+    # sequential : RMSNorm -> Attention -> Residual -> RMSNorm -> MLP -> Residual
+    # parallel   : RMSNorm -> (Attention + MLP) -> Residual   (PTB; GPT-J/PaLM style, MegaScale Fig 3)
     def __init__(self, config, layer_idx):
         super().__init__()
         RMSNorm = LlamaRMSNorm if os.getenv("FLASH_ATTEN", "1") != "1" else TritonRMSNorm
+        # Parallel transformer block: attention and MLP read one shared norm and their outputs are summed,
+        # so there is a single norm (no post-attention norm) and one residual per layer.
+        self.parallel_block = getattr(config, "parallel_block", False)
+        # Set by apply_tensor_parallel: whether to fuse the layer's collectives (shared all-gather +
+        # combined reduce-scatter) — only the dense-MLP sequence-parallel PTB path is wired for it.
+        self.parallel_block_fused = False
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        if not self.parallel_block:
+            self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attention = Attention(config, layer_idx=layer_idx)
         # When num_experts > 1 the feed-forward becomes a Mixture-of-Experts layer (expert parallel).
         # Kept under the `mlp` attribute so the rest of the codebase treats dense/MoE uniformly.
@@ -304,6 +316,17 @@ class DecoderLayer(nn.Module):
     def forward(self, x, attention_mask=None, position_ids=None):
         # TODO: Use the default position_ids for RoPE during training. If we have time, work on generation
         cos, sin = self.cos, self.sin
+        if self.parallel_block:
+            n = self.input_layernorm(x)
+            if self.parallel_block_fused:
+                # MegaScale Fig 3b: one shared all-gather feeds both branches (raw projections), and a
+                # single combined reduce-scatter redistributes the summed attention + MLP partials.
+                n = GatherFromSequenceParallelRegion.apply(n)
+                attn = self.attention(n, cos, sin, attention_mask, position_ids)  # un-reduced partial
+                mlp = self.mlp(n)  # un-reduced partial
+                return x + ReduceScatterToSequenceParallelRegion.apply(attn + mlp)
+            # Plain TP / single-GPU PTB: the two branches each do their own collective.
+            return x + self.attention(n, cos, sin, attention_mask, position_ids) + self.mlp(n)
         x = x + self.attention(self.input_layernorm(x), cos, sin, attention_mask, position_ids)  # Attention
         x = x + self.mlp(self.post_attention_layernorm(x))  # MLP
         return x
@@ -362,7 +385,8 @@ class Llama(nn.Module):
         for layer in self.decoder_layers:
             layer.input_layernorm.reset_parameters()
             layer.attention.reset_parameters()
-            layer.post_attention_layernorm.reset_parameters()
+            if not layer.parallel_block:
+                layer.post_attention_layernorm.reset_parameters()
             layer.mlp.reset_parameters()
 
         self.final_norm.reset_parameters()

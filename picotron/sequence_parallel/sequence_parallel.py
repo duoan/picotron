@@ -70,3 +70,21 @@ class ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         return all_gather_along_seq(grad_output)
+
+
+class GatherFromSequenceParallelRegion(torch.autograd.Function):
+    """All-gather the sequence in forward, reduce-scatter the grad in backward (conjugate of the `g`).
+
+    Used by the parallel transformer block (MegaScale Fig 3b): the sequence-sharded norm output is
+    gathered **once** and fed to both the attention and MLP column projections, so the whole block needs
+    only this single all-gather (its backward reduce-scatters the summed input gradient of both
+    branches in one collective).
+    """
+
+    @staticmethod
+    def forward(ctx, x):
+        return all_gather_along_seq(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return reduce_scatter_along_seq(grad_output)

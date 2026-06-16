@@ -48,11 +48,15 @@ def make_cfg(a):
 NORM_SUFFIXES = ("input_layernorm.weight", "post_attention_layernorm.weight", "final_norm.weight")
 
 
-def build(cfg, device, dtype, async_tp, sequence_parallel, vocab_parallel_ce):
+def build(cfg, device, dtype, async_tp, sequence_parallel, vocab_parallel_ce, parallel_block=False):
+    import copy
+
     from picotron.model import Llama
     from picotron.tensor_parallel.tensor_parallel import apply_tensor_parallel
 
     torch.manual_seed(0)
+    cfg = copy.copy(cfg)
+    cfg.parallel_block = parallel_block  # architecture is selected via config (read by the DecoderLayer)
     # Build + init directly on the GPU (CPU weight init dominates the wall clock otherwise).
     with torch.device(device):
         model = Llama(cfg)
@@ -70,7 +74,10 @@ def run_one(name, cfg, args, device, dtype, **flags):
     vocab_ce = flags.get("vocab_parallel_ce", False)
     tp = pgm.process_group_manager.tp_world_size
 
-    model = build(cfg, device, dtype, flags.get("async_tp", False), sequence_parallel, vocab_ce)
+    model = build(
+        cfg, device, dtype, flags.get("async_tp", False), sequence_parallel, vocab_ce,
+        parallel_block=flags.get("parallel_block", False),
+    )
     g = torch.Generator().manual_seed(1234)
     input_ids = torch.randint(0, cfg.vocab_size, (args.mbs, args.seq), generator=g).to(device)
     target = torch.randint(0, cfg.vocab_size, (args.mbs, args.seq), generator=g).to(device).reshape(-1)
@@ -149,6 +156,8 @@ def main():
         ("+seqpar", {"sequence_parallel": True}),
         ("+vocab_ce", {"vocab_parallel_ce": True}),
         ("+seqpar+vocab_ce", {"sequence_parallel": True, "vocab_parallel_ce": True}),
+        ("+ptb+seqpar", {"sequence_parallel": True, "parallel_block": True}),
+        ("+ptb+seqpar+vocab_ce", {"sequence_parallel": True, "parallel_block": True, "vocab_parallel_ce": True}),
     ]
     rows = [run_one(name, cfg, args, device, dtype, **flags) for name, flags in configs]
 

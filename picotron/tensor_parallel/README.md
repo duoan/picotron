@@ -1,18 +1,24 @@
 # Tensor Parallelism in picotron
 
 A from-scratch guide to tensor parallelism (TP): **why** it exists, the Megatron-LM column/row split
-that already ships in picotron, and three canonical, **bit-exact** improvements layered on top —
-**async communication overlap**, **sequence parallelism**, and **vocab-parallel cross-entropy** — each
-implemented, gradient-validated, and benchmarked on 2× A100.
+that already ships in picotron, and a ladder of canonical, **bit-exact** improvements layered on top —
+**async communication overlap**, **sequence parallelism**, **vocab-parallel cross-entropy**, and the
+**MegaScale** layer-level optimizations (a **parallel transformer block** that fuses the per-layer
+collectives, plus a **chunked comm/compute overlap** kernel) — each implemented, gradient-validated,
+and benchmarked on 2× A100.
 
 - Layers: `tensor_parallel.py` — `ColumnParallelLinear`, `RowParallelLinear`, `VocabParallelEmbedding`,
   `apply_tensor_parallel`
 - Communication primitives: `tp_communications.py` — the `f`/`g` collectives, the async-overlap linear,
   and `vocab_parallel_cross_entropy`
 - Sequence parallelism: `picotron/sequence_parallel/` — shares the TP process group; the seq-parallel
-  collectives (`sp_communications.py`) + fused all-gather linear (`sequence_parallel.py`)
+  collectives (`sp_communications.py`), fused all-gather linear (`sequence_parallel.py`), and the
+  chunked comm/compute overlap kernels (`overlap.py`, MegaScale Fig 3c)
+- Parallel transformer block: `model.py` (`DecoderLayer`, `config.parallel_block`) — one shared norm,
+  attention + MLP in parallel, fused to a single shared all-gather + combined reduce-scatter under SP
 - Tests / benchmark: `tests/test_tensor_parallel.py`, `tests/test_tp_sequence_parallel.py`,
-  `tests/test_tp_vocab_ce.py`, `tests/bench_tp.py`
+  `tests/test_tp_vocab_ce.py`, `tests/test_ptb_model.py`, `tests/test_ptb_overlap.py`,
+  `tests/test_sp_overlap_kernel.py`, `tests/bench_tp.py`
 - Slides: `teaching_slides.md` (`./render_slides.sh`)
 
 ---
@@ -75,9 +81,13 @@ The stock implementation is correct Megatron-v1 TP. Three well-known improvement
 | **+async** | overlap the column-parallel input-grad all-reduce with the weight-grad GEMM | hides comm behind compute | Megatron |
 | **+seqpar** | shard the norm/residual regions along the **sequence** dim | `tp×` less activation memory in those regions, **same comm volume** | [Korthikanti et al. 2022](https://arxiv.org/abs/2205.05198) |
 | **+vocab_ce** | keep the output logits vocab-sharded; loss exchanges only `[b,s]` scalars | no `[b,s,V]` logits, O(V)→O(1) comm at the loss | Megatron `vocab_parallel_cross_entropy` |
+| **+ptb** | run the layer as a parallel transformer block: attention + MLP from one shared norm, fused under SP to **one** shared all-gather + **one** combined reduce-scatter | **halves the per-layer collectives** (and drops a norm + a residual) → turns SP into a net speedup | [MegaScale](https://arxiv.org/abs/2402.15627) Fig 3b |
+| **+overlap** | chunk the SP all-gather / reduce-scatter and pipeline each chunk's GEMM with the collective on a second stream | hides the collective behind the GEMM (needs higher TP / slower link to pay off) | [MegaScale](https://arxiv.org/abs/2402.15627) Fig 3c |
 
 ```python
-apply_tensor_parallel(model, async_tp=True, sequence_parallel=True, vocab_parallel_ce=True)
+# the architecture is a config flag; the comm strategies are apply_tensor_parallel flags
+config.parallel_block = True
+apply_tensor_parallel(model, async_tp=True, sequence_parallel=True, vocab_parallel_ce=True, overlap_comm=True)
 ```
 
 ### Rung 1 — async communication overlap
@@ -168,6 +178,55 @@ shards, exchanging only per-token scalars — the max logit, the sum of `exp`, a
 Communication drops from `O(V)` to `O(1)` per token and the full logits are never materialized.
 Backward is the usual `softmax - onehot(target)`, recovered from the saved per-shard softmax.
 
+### Rung 4 — parallel transformer block + chunked comm overlap (MegaScale)
+
+The previous rungs keep the **sequential** block (`x = x + Attn(LN(x)); x = x + MLP(LN(x))`). Under SP
+that block needs an all-gather + reduce-scatter around *each* sublayer — and because the q/k/v (and
+up/gate) projections all-gather independently, a layer issues **6 all-gathers + 4 reduce-scatters** per
+forward+backward.
+
+[MegaScale](https://arxiv.org/abs/2402.15627) attacks this at the layer level (Fig 3):
+
+**(a) Parallel transformer block (`config.parallel_block`, MegaScale Fig 3b).** Run attention and MLP
+*in parallel* from one shared norm: `x = x + Attn(LN(x)) + MLP(LN(x))` (GPT-J / PaLM style). Under SP the
+DecoderLayer then gathers the norm output **once**, feeds the (now "raw") projections, and reduce-scatters
+the **summed** attention+MLP partials **once** — the whole layer is **one shared all-gather + one combined
+reduce-scatter**. The projections are still fully TP-sharded (`out/in ÷ tp`, `num_local_heads = heads ÷
+tp`); only the collective bookkeeping moves up into the layer.
+
+```321:327:picotron/model.py
+            if self.parallel_block_fused:
+                # MegaScale Fig 3b: one shared all-gather feeds both branches (raw projections), and a
+                # single combined reduce-scatter redistributes the summed attention + MLP partials.
+                n = GatherFromSequenceParallelRegion.apply(n)
+                attn = self.attention(n, cos, sin, attention_mask, position_ids)  # un-reduced partial
+                mlp = self.mlp(n)  # un-reduced partial
+                return x + ReduceScatterToSequenceParallelRegion.apply(attn + mlp)
+```
+
+**(b) Chunked comm/compute overlap (`overlap_comm`, MegaScale Fig 3c).** The fused SP linears still do
+the collective as one *blocking* call (gather everything, then GEMM; or GEMM, then scatter everything).
+The overlap kernels (`sequence_parallel/overlap.py`) break the GEMM into per-rank sequence chunks and
+pipeline each chunk's matmul with one step of the collective on a second stream: a **ring** all-gather
+whose GEMM overlaps the next rotation, and a **chunked** reduce-scatter that launches each chunk's reduce
+while the next chunk's GEMM runs. Needs `CUDA_DEVICE_MAX_CONNECTIONS=1`.
+
+The collective count per layer (forward+backward), measured with a live NCCL counter
+(`tests/test_ptb_overlap.py`, q/k/v and up/gate fused):
+
+| block / strategy | all-gather | reduce-scatter | reduce | p2p |
+|---|---:|---:|---:|---:|
+| sequential / fused | 6 | 4 | 0 | 0 |
+| sequential / overlap | 4 | 2 | 4 | 2 |
+| **PTB / fused** | **3** | **2** | 0 | 0 |
+| **PTB / overlap** | **2** | **1** | 2 | 1 |
+
+**Honest caveat.** The chunked overlap is **bit-exact but ~neutral at TP=2 on NVLink** (held even at
+seq=16384): the link is fast enough that the AG/RS is already tiny next to the GEMM, so there is little to
+hide and chunking slightly shrinks the GEMM tiles. Its payoff grows with TP degree / slower interconnect.
+**The PTB collective fusion, by contrast, is a clear win even at TP=2** (see §4) — it is what flips
+sequence parallelism from a net slowdown into a speedup.
+
 ---
 
 ## 3. Tests — bit-exact
@@ -176,17 +235,27 @@ Backward is the usual `softmax - onehot(target)`, recovered from the saved per-s
 # original column/row vs a reference nn.Linear
 CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_tensor_parallel.py
 
-# full Llama: plain TP and TP+sequence-parallel vs a single-GPU reference
+# full Llama: plain TP, TP+sequence-parallel, and TP+SP+overlap vs a single-GPU reference
 CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_tp_sequence_parallel.py
 
 # vocab-parallel cross-entropy vs dense F.cross_entropy on gathered logits
 torchrun --nproc_per_node 2 tests/test_tp_vocab_ce.py
+
+# parallel transformer block (full Llama) vs a dense PTB reference
+CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_ptb_model.py
+
+# the overlap kernels vs the fused SP path (kernel-level, and seq/PTB block-level)
+CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_sp_overlap_kernel.py
+CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node 2 tests/test_ptb_overlap.py
 ```
 
 `test_tp_sequence_parallel.py` builds a tiny Llama, takes a single-GPU reference forward/backward, then
-runs plain TP and TP+SP from the same weights and checks every owned gradient. Both match the reference
-**bit-exactly** (`loss_diff = 0`, `grad_diff ≈ 2e-8` in fp32). Vocab-parallel CE matches dense
-cross-entropy to `grad_diff ≈ 4e-9`.
+runs plain TP, TP+SP, and TP+SP+overlap from the same weights and checks every owned gradient — all match
+the reference **bit-exactly** (`loss_diff = 0`, `grad_diff ≈ 2e-8` in fp32, including the chunked overlap
+kernels routing the real q/k/v/out_proj/up/gate/down). Vocab-parallel CE matches dense cross-entropy to
+`grad_diff ≈ 4e-9`. `test_ptb_model.py` validates the parallel transformer block (plain TP and the fused
+TP+SP path) against a dense PTB reference (`grad_diff ≈ 2e-8`); `test_ptb_overlap.py` checks all four
+{sequential, PTB} × {fused, overlap} combinations against dense references and counts the collectives.
 
 ---
 
@@ -205,36 +274,54 @@ Measured on **2× A100-80GB (TP=2, bf16, 24-layer / hidden-2048 / seq-2048 / mbs
 
 | config | ms/step | tok/s | peak MB | mem vs base | speedup |
 |---|---:|---:|---:|---:|---:|
-| baseline | 327.7 | 49992 | 17865 | 1.00× | 1.00× |
-| +async | 320.5 | 51126 | 17865 | 1.00× | **1.02×** |
-| +seqpar | 363.2 | 45107 | **14576** | **1.23×** | 0.90× |
-| +vocab_ce | 321.7 | 50936 | 15986 | 1.12× | 1.02× |
-| **+seqpar+vocab_ce** | 356.4 | 45966 | **12697** | **1.41×** | 0.92× |
+| baseline | 327.3 | 50051 | 17865 | 1.00× | 1.00× |
+| +async | 319.0 | 51369 | 17865 | 1.00× | 1.03× |
+| +seqpar | 362.9 | 45144 | 14576 | 1.23× | 0.90× |
+| +vocab_ce | 321.0 | 51048 | 15986 | 1.12× | 1.02× |
+| +seqpar+vocab_ce | 356.1 | 46010 | 12697 | 1.41× | 0.92× |
+| **+ptb+seqpar** | 260.7 | 62856 | 13367 | **1.34×** | **1.26×** |
+| **+ptb+seqpar+vocab_ce** | **254.0** | **64502** | **11488** | **1.56×** | **1.29×** |
+
+And at **long sequence** (2× A100-80GB, 8-layer / hidden-4096 / inter-14336 / 32-head / **seq-16384** /
+mbs-1, run on Modal):
+
+| config | ms/step | peak MB | mem vs base | speedup |
+|---|---:|---:|---:|---:|
+| baseline | 795.3 | 28615 | 1.00× | 1.00× |
+| +seqpar | 816.7 | 24052 | 1.19× | 0.97× |
+| +seqpar+vocab_ce | 805.0 | 20294 | 1.41× | 0.99× |
+| **+ptb+seqpar** | 716.3 | 22441 | 1.28× | **1.11×** |
+| **+ptb+seqpar+vocab_ce** | **703.1** | **18683** | **1.53×** | **1.13×** |
 
 Takeaways (honest, single-node TP=2):
 
-1. **Sequence parallelism is a memory lever, not a speed lever.** It cuts peak memory **1.23×** (3.3 GB)
-   by sharding the residual stream, but on a single NVLink node at TP=2 the extra reduce-scatter /
-   all-gather *calls* (same bytes, more launches) cost ~10% wall-clock. Its speed story improves at
-   higher TP and across nodes, where it also unlocks not recomputing those regions.
-2. **Vocab-parallel CE is nearly free** — 1.12× less memory at neutral speed, because it removes the
-   full `[b,s,V]` logit gather + dense softmax for the price of a few `[b,s]` all-reduces.
-3. **They stack: 1.41× less memory together**, which is what lets you fit a longer sequence or a bigger
-   micro-batch on the same card.
-4. **Async overlap** is a small win here (1.02×); the gain grows with the column-parallel weight-grad
-   GEMM size relative to the all-reduce latency.
+1. **Sequence parallelism alone is a memory lever, not a speed lever.** It cuts peak memory **1.23×**
+   (3.3 GB) by sharding the residual stream, but on a single NVLink node at TP=2 the extra reduce-scatter
+   / all-gather *calls* (same bytes, more launches) cost ~10% wall-clock.
+2. **The parallel transformer block flips that.** By fusing each layer to one shared all-gather + one
+   combined reduce-scatter (half the collectives) and dropping a norm + a residual, `+ptb+seqpar` is
+   **1.26× faster *and* 1.34× less memory** than baseline — SP becomes a net win. The advantage holds at
+   long sequence (1.11× at seq-16384).
+3. **Vocab-parallel CE is nearly free** — ~1.12× less memory at neutral speed; it stacks with PTB+SP for
+   **1.29× faster / 1.56× less memory** (1.13× / 1.53× at long sequence).
+4. **Async overlap** (1.03×) and the **chunked comm/compute overlap** (bit-exact, ~neutral at TP=2 on
+   NVLink) are latency-hiding tricks whose payoff grows with TP degree / slower interconnect.
 
 ---
 
 ## 5. Configuration / training integration
 
-The three knobs are plumbed through `apply_tensor_parallel(model, async_tp, sequence_parallel,
-vocab_parallel_ce)`. Sequence parallelism additionally needs (a) the all-reduce of norm weight grads
+The comm knobs are plumbed through `apply_tensor_parallel(model, async_tp, sequence_parallel,
+vocab_parallel_ce, overlap_comm)`; the parallel-transformer-block **architecture** is a model flag,
+`config.parallel_block` (read by the `DecoderLayer`; `apply_tensor_parallel` detects it and fuses the
+collectives under SP). Sequence parallelism additionally needs (a) the all-reduce of norm weight grads
 over the TP group before `optimizer.step()` and (b) the loss to consume the gathered logits (when
 `vocab_parallel_ce=False`, `final_proj` still gathers, so `train.py`'s dense `F.cross_entropy` is
-unchanged); with `vocab_parallel_ce=True` the loss switches to `vocab_parallel_cross_entropy`. The
-correctness path is gradient-validated end-to-end in `tests/test_tp_sequence_parallel.py`; benchmarks
-run the full step in `tests/bench_tp.py`.
+unchanged); with `vocab_parallel_ce=True` the loss switches to `vocab_parallel_cross_entropy`. Note PTB
+has **no** post-attention norm, so its sequence-parallel norm-grad all-reduce covers only
+`input_layernorm` + `final_norm`. The correctness path is gradient-validated end-to-end in
+`tests/test_tp_sequence_parallel.py` and `tests/test_ptb_model.py`; benchmarks run the full step in
+`tests/bench_tp.py`.
 
 ---
 

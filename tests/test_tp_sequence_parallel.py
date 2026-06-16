@@ -120,10 +120,10 @@ def reference_grads(model, input_ids, target_ids):
     return loss.item(), {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
 
 
-def run_tp(cfg, weights, input_ids, target_ids, sequence_parallel):
+def run_tp(cfg, weights, input_ids, target_ids, sequence_parallel, overlap_comm=False):
     torch.manual_seed(0)
     model = Llama(cfg).to(torch.float32).to(device)
-    model = apply_tensor_parallel(model, sequence_parallel=sequence_parallel)
+    model = apply_tensor_parallel(model, sequence_parallel=sequence_parallel, overlap_comm=overlap_comm)
     model.to(device)
     # Load the reference weights, slicing the tensor-parallel params to this rank's shard.
     tp_rank, tp = pgm.process_group_manager.tp_rank, pgm.process_group_manager.tp_world_size
@@ -185,6 +185,10 @@ def main():
     compare("plain TP (all-reduce)", ref_loss, ref_grads, loss, grads, atol)
     loss, grads = run_tp(cfg, weights, input_ids, target_ids, sequence_parallel=True)
     compare("TP + sequence parallel", ref_loss, ref_grads, loss, grads, atol)
+    # Same model, but every q/k/v/up/gate (column) and out_proj/down (row) routes through the chunked
+    # comm/compute overlap kernels (MegaScale Fig 3c).
+    loss, grads = run_tp(cfg, weights, input_ids, target_ids, sequence_parallel=True, overlap_comm=True)
+    compare("TP + sequence parallel + overlap", ref_loss, ref_grads, loss, grads, atol)
 
     if global_rank == 0:
         print(f"[tp={world_size}] All tensor/sequence-parallel tests passed ✅")

@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import picotron.process_group_manager as pgm
+from picotron.sequence_parallel.overlap import (
+    overlapped_column_parallel_linear_sp,
+    overlapped_row_parallel_linear_sp,
+)
 from picotron.sequence_parallel.sequence_parallel import (
     ReduceScatterToSequenceParallelRegion,
     column_parallel_linear_sp,
@@ -17,7 +21,13 @@ from picotron.tensor_parallel.tp_communications import (
 )
 
 
-def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool = False, vocab_parallel_ce: bool = False):
+def apply_tensor_parallel(
+    model,
+    async_tp: bool = False,
+    sequence_parallel: bool = False,
+    vocab_parallel_ce: bool = False,
+    overlap_comm: bool = False,
+):
     """Replace the dense Linear/Embedding layers of `model` with their tensor-parallel versions.
 
     Args:
@@ -27,9 +37,17 @@ def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool
         vocab_parallel_ce: keep the output logits vocab-sharded (no ``gather_output``) so the loss can
             use ``vocab_parallel_cross_entropy``. When False, the final projection gathers the full
             logits (the original behavior).
+
+    The parallel-transformer-block architecture is selected via ``config.parallel_block`` (read by the
+    DecoderLayer). Under sequence parallelism it fuses each layer down to a single shared all-gather +
+    single combined reduce-scatter (MegaScale Fig 3b): the per-layer projections run in "raw" mode and
+    the DecoderLayer owns the collectives.
     """
     # async overlap targets the all-reduce backward path, which sequence parallelism removes.
     async_tp = async_tp and not sequence_parallel
+    # the chunked comm/compute overlap (MegaScale Fig 3c) pipelines the SP all-gather / reduce-scatter,
+    # so it only applies when sequence parallelism is on.
+    overlap_comm = overlap_comm and sequence_parallel
 
     def _replace_module(_module, _linear_proj_name, _style, args=None):
         if args is None:
@@ -45,6 +63,8 @@ def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool
                 gather_output=args.get("gather_output", False),
                 async_all_reduce=async_tp,
                 sequence_parallel=sequence_parallel,
+                overlap_comm=overlap_comm,
+                ptb=args.get("ptb", False),
             )
         elif _style == "row":
             new_linear_layer = RowParallelLinear(
@@ -52,6 +72,8 @@ def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool
                 out_features=linear_layer.out_features,
                 bias=linear_layer.bias is not None,
                 sequence_parallel=sequence_parallel,
+                overlap_comm=overlap_comm,
+                ptb=args.get("ptb", False),
             )
         else:
             new_linear_layer = VocabParallelEmbedding(
@@ -72,13 +94,18 @@ def apply_tensor_parallel(model, async_tp: bool = False, sequence_parallel: bool
     ]
 
     for layer in model.decoder_layers:
+        # PTB collective fusion needs the per-layer projections in raw mode and the DecoderLayer to own
+        # the shared gather/scatter; it is wired only for the dense-MLP sequence-parallel path (MoE
+        # routes its FFN through expert parallelism). The architecture itself comes from config.
+        layer_ptb = getattr(layer, "parallel_block", False) and sequence_parallel and hasattr(layer.mlp, "down_proj")
+        layer.parallel_block_fused = layer_ptb
         for module_name, linear_proj_name, style in module_linear_name_stype_mapping_list:
             module = getattr(layer, module_name)
             # MoE layers distribute their FFN via expert parallelism, not tensor parallelism,
             # so the plain up/gate/down projections only exist on dense MLP layers.
             if not hasattr(module, linear_proj_name):
                 continue
-            _replace_module(module, linear_proj_name, style)
+            _replace_module(module, linear_proj_name, style, args={"ptb": layer_ptb})
 
     _replace_module(model, "embedding", "vocab")
     # With vocab-parallel cross-entropy the logits stay vocab-sharded (the loss handles the reduction);
@@ -108,6 +135,8 @@ class ColumnParallelLinear(torch.nn.Module):
         gather_output: bool = False,
         async_all_reduce: bool = False,
         sequence_parallel: bool = False,
+        overlap_comm: bool = False,
+        ptb: bool = False,
     ) -> None:
         super().__init__()
 
@@ -124,6 +153,11 @@ class ColumnParallelLinear(torch.nn.Module):
         self.sequence_parallel = sequence_parallel
         # async overlap and sequence parallelism are alternative `f`-operator strategies.
         self.async_all_reduce = async_all_reduce and not sequence_parallel
+        # chunked all-gather/GEMM pipeline (MegaScale Fig 3c); only meaningful under sequence parallelism.
+        self.overlap_comm = overlap_comm and sequence_parallel
+        # parallel-transformer-block "raw" mode: the DecoderLayer all-gathers the shared input once, so
+        # this projection is a plain local matmul (no per-linear `f` collective). See model.py PTB path.
+        self.ptb = ptb
         # Allocate space for the weight and bias
         # Note: torch.nn.functional.linear performs XW^T + b so we exchange the order of dimensions
         self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features))  # W_i
@@ -152,7 +186,14 @@ class ColumnParallelLinear(torch.nn.Module):
         self.weight.data = weight_list[self.tp_rank].contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.sequence_parallel:
+        if self.ptb:
+            # Input was already all-gathered once by the parallel transformer block; just matmul.
+            output = F.linear(x, self.weight, self.bias)
+        elif self.sequence_parallel and self.overlap_comm:
+            # Chunked, pipelined all-gather + matmul (MegaScale Fig 3c): the all-gather is rotated in
+            # shard-by-shard and each shard's GEMM overlaps the next rotation.
+            output = overlapped_column_parallel_linear_sp(x, self.weight, self.bias)
+        elif self.sequence_parallel:
             # Fused all-gather + matmul (the seq-parallel `f`). Only the sequence-sharded input is
             # checkpointed; the gathered tensor is recomputed in backward, which is what actually
             # shrinks activation memory.
@@ -185,12 +226,25 @@ class RowParallelLinear(nn.Module):
         init_method: method to initialize weights.
     """
 
-    def __init__(self, in_features: int, out_features: int, bias: bool, sequence_parallel: bool = False):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool,
+        sequence_parallel: bool = False,
+        overlap_comm: bool = False,
+        ptb: bool = False,
+    ):
         super().__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
         self.tp_rank = pgm.process_group_manager.tp_rank
         self.sequence_parallel = sequence_parallel
+        # chunked GEMM/reduce-scatter pipeline (MegaScale Fig 3c); only meaningful under sequence parallelism.
+        self.overlap_comm = overlap_comm and sequence_parallel
+        # parallel-transformer-block "raw" mode: return the un-reduced local partial; the DecoderLayer
+        # sums the attention and MLP partials and does a single combined reduce-scatter. See model.py.
+        self.ptb = ptb
 
         self.in_features = in_features
         self.out_features = out_features
@@ -226,14 +280,21 @@ class RowParallelLinear(nn.Module):
         self.weight.data = weight_list[self.tp_rank].contiguous()
 
     def forward(self, x):
-        # X_i * W_i^T + b
-        output_parallel = F.linear(x, self.weight)
-        if self.sequence_parallel:
+        if self.ptb:
+            # Return the un-reduced partial; the parallel transformer block reduces it (combined with the
+            # other branch) in a single reduce-scatter.
+            output = F.linear(x, self.weight)
+            return output if self.bias is None else output + self.bias
+        if self.sequence_parallel and self.overlap_comm:
+            # Chunked, pipelined matmul + reduce-scatter (MegaScale Fig 3c): each output sequence chunk
+            # launches its reduce while the next chunk's GEMM runs.
+            output = overlapped_row_parallel_linear_sp(x, self.weight)
+        elif self.sequence_parallel:
             # The seq-parallel `g`: reduce across TP partitions and scatter back to a sequence shard.
-            output = ReduceScatterToSequenceParallelRegion.apply(output_parallel)
+            output = ReduceScatterToSequenceParallelRegion.apply(F.linear(x, self.weight))
         else:
             # All-reduce across all the partitions.
-            output = ReduceFromModelParallelRegion.apply(output_parallel)
+            output = ReduceFromModelParallelRegion.apply(F.linear(x, self.weight))
         return output if self.bias is None else output + self.bias
 
 
