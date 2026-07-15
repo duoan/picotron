@@ -6,7 +6,7 @@ benchmark times one full ``train_step`` (the whole micro-batch sweep + backward)
 so the theory and the wall clock line up.
 
 Directly comparable (each sweeps ``m = grad_acc_steps`` micro-batches once through the full model):
-    afab, 1f1b, zb (Zero-Bubble), interleaved (virtual pipeline).
+    afab, 1f1b, zb (Zero-Bubble), interleaved (virtual pipeline), zbv (V-shape Zero-Bubble).
 
 Metrics reported per schedule:
     step ms       : measured wall-clock of one full train_step (slowest stage, MAX-reduced).
@@ -90,14 +90,14 @@ def bubble_fraction(engine, p, m, v):
         return (p - 1) / m
     if engine == "interleaved":
         return (p - 1) / (m * v)  # virtual pipeline shrinks the bubble by v
-    if engine == "zb":
+    if engine in ("zb", "zbv"):
         return 0.0  # ideal: W work fills the bubble (real ~ small, bounded by warmup)
     return float("nan")
 
 
 def build_stage(engine, cfg, device, dtype, num_virtual_stages):
     from picotron.pipeline_parallel.pipeline_parallel import PipelineParallel
-    from picotron.pipeline_parallel.pp_schedules import InterleavedPipelineParallel
+    from picotron.pipeline_parallel.pp_schedules import InterleavedPipelineParallel, VShapePipelineParallel
 
     torch.manual_seed(0)
     from picotron.model import Llama
@@ -106,6 +106,8 @@ def build_stage(engine, cfg, device, dtype, num_virtual_stages):
     model.reset_parameters()
     if engine == "interleaved":
         stage = InterleavedPipelineParallel(model, cfg, num_virtual_stages=num_virtual_stages)
+    elif engine == "zbv":
+        stage = VShapePipelineParallel(model, cfg)
     else:
         stage = PipelineParallel(model, cfg)
     return stage.to(dtype).to(device)
@@ -119,6 +121,7 @@ def schedule_fn(engine):
     from picotron.pipeline_parallel.pp_schedules import (
         train_step_pipeline_interleaved,
         train_step_pipeline_zb,
+        train_step_pipeline_zbv,
     )
 
     return {
@@ -126,6 +129,7 @@ def schedule_fn(engine):
         "1f1b": train_step_pipeline_1f1b,
         "zb": train_step_pipeline_zb,
         "interleaved": train_step_pipeline_interleaved,
+        "zbv": train_step_pipeline_zbv,
     }[engine]
 
 
@@ -266,7 +270,7 @@ def main():
     tokens_per_step = args.mbs * args.seq * m
 
     ideal_ms = compute_only_ms(cfg, dl, device, dtype, args.iters, args.warmup)
-    comparable = ["afab", "1f1b", "zb", "interleaved"]
+    comparable = ["afab", "1f1b", "zb", "interleaved", "zbv"]
     results = {e: time_engine(e, cfg, dl, device, dtype, v, args.iters, args.warmup) for e in comparable}
 
     if rank == 0:

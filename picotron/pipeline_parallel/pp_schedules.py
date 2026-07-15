@@ -20,6 +20,7 @@ Both are validated to produce **bit-exact gradients** vs the AFAB/1F1B baseline 
 ``tests/test_pipeline_parallel.py``.
 """
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -30,6 +31,7 @@ from picotron.pipeline_parallel.pp_communications import (
     bidirectional_pipeline_communicate,
     interleaved_pipeline_communicate,
     pipeline_communicate,
+    vshape_pipeline_communicate,
 )
 
 
@@ -352,5 +354,236 @@ def train_step_pipeline_interleaved(model, data_loader, tensor_shapes, device, d
         )
         if recv_next:
             output_grads[bwd_chunk(next_bwd_step)].append(recv_bwd)
+
+    return logging_loss
+
+
+# =============================================================================================
+# ZB-V / V-shape Zero Bubble — Qi et al., ICLR 2024 (arXiv:2401.10241, the "V-Schedule")
+# =============================================================================================
+#
+# Interleaved 1F1B shrinks the bubble by ``v`` but pays ``v`` x the communication. Zero-Bubble
+# (ZB-H1) removes the bubble by deferring weight grads (W) but needs extra activation memory. ZB-V
+# combines both ideas with a **V-shaped** chunk placement:
+#
+#   * Each device holds exactly **2** of the ``G = 2p`` chunks. Device ``d`` owns the down-leg chunk
+#     ``d`` and the up-leg chunk ``2p-1-d``. Forward visits chunks ``0 -> 1 -> ... -> 2p-1``, whose
+#     devices trace ``0..p-1`` (down) then ``p-1..0`` (up) — a "V". The turn at the bottom
+#     (chunk ``p-1 -> p``, both on device ``p-1``) is a *local* hand-off (no network hop), and the
+#     first and last chunk both live on device 0 (so the loss returns to where the input entered).
+#   * Every backward is split into B (input grad, critical path) and W (weight grad, reschedulable),
+#     reusing the same ``_DeferredLinear`` machinery as ZB-H1. W work fills the bubbles.
+#
+# The optimal ZB-V ordering is intricate, so instead of hand-writing a per-rank step table we
+# **generate the schedule deterministically** from ``(p, m)`` (identical on every rank) with a small
+# list scheduler, then execute it with round-matched batched P2P. Every cross-device transfer is
+# assigned to the round in which its producer runs, so the matching send/recv are always posted in the
+# same round on both endpoints — deadlock-free by construction and bit-exact vs the full-model grads.
+
+
+class VShapePipelineParallel(nn.Module):
+    """V-shape model wrapper: each rank owns 2 non-contiguous chunks (down-leg + up-leg).
+
+    With ``p`` ranks there are ``G = 2p`` chunks; rank ``r`` materialises chunk ``r`` and chunk
+    ``2p-1-r``. Chunk ``g`` holds the embedding iff ``g == 0``, the final norm/proj iff ``g == 2p-1``,
+    and decoder layers ``distribute_layers(L, 2p)[g]`` — so a forward through chunks ``0..2p-1``
+    traverses the layers in order.
+    """
+
+    def __init__(self, model, config):
+        super().__init__()
+        pg = pgm.process_group_manager
+        self.p = pg.pp_world_size
+        self.num_global_stages = 2 * self.p
+        rank, G = pg.pp_rank, self.num_global_stages
+        self.owned = [rank, G - 1 - rank]  # (down-leg chunk, up-leg chunk)
+        groups = distribute_layers(config.num_hidden_layers, G)
+
+        self.embeddings = nn.ModuleDict()
+        self.decoder_chunks = nn.ModuleDict()
+        self.final_norms = nn.ModuleDict()
+        self.final_projs = nn.ModuleDict()
+        for gid in self.owned:
+            self.embeddings[str(gid)] = model.embedding if gid == 0 else nn.Identity()
+            self.decoder_chunks[str(gid)] = nn.ModuleDict({str(i): model.decoder_layers[i] for i in groups[gid]})
+            self.final_norms[str(gid)] = model.final_norm if gid == G - 1 else nn.Identity()
+            self.final_projs[str(gid)] = model.final_proj if gid == G - 1 else nn.Identity()
+
+    def dev(self, g):
+        """Physical device (pp rank) hosting chunk ``g`` — the V map: ``g`` down, ``2p-1-g`` up."""
+        return g if g < self.p else 2 * self.p - 1 - g
+
+    def is_first(self, g):
+        return g == 0
+
+    def is_last(self, g):
+        return g == self.num_global_stages - 1
+
+    def forward(self, gid, input_ids, position_ids, hidden_states):
+        x = hidden_states if hidden_states is not None else input_ids
+        x = self.embeddings[str(gid)](x)
+        for layer in self.decoder_chunks[str(gid)].values():
+            x = layer(x, position_ids=position_ids)
+        x = self.final_norms[str(gid)](x)
+        return self.final_projs[str(gid)](x)
+
+
+def _vshape_backward_input(input_tensor, output_tensor, output_tensor_grad):
+    """ZB-V 'B' pass: activation grad now, weight grads deferred to ``_W_TASKS`` (drained by W)."""
+    if output_tensor_grad is None:
+        output_tensor_grad = torch.ones_like(output_tensor, memory_format=torch.preserve_format)
+    if input_tensor is not None:
+        input_tensor.retain_grad()
+    torch.autograd.backward(output_tensor, grad_tensors=output_tensor_grad, retain_graph=False)
+    return input_tensor.grad if input_tensor is not None else None
+
+
+def _zbv_schedule(p, m):
+    """Deterministically assign a round to every F/B/W action of the ZB-V schedule.
+
+    List scheduler over ``G = 2p`` chunks and ``m`` micro-batches. Each device runs at most one action
+    per round; an action is ready only once its dependency ran in a *strictly earlier* round (so the
+    produced tensor is available a round before it is consumed). Priority per device: **B** (frees
+    activations) > **F** (bounded by an in-flight cap for ~1F1B memory) > **W** (fills leftover idle
+    rounds). Returns ``(roundF, roundB, roundW, num_rounds)``, identical on every rank.
+    """
+    G = 2 * p
+    dev = lambda g: g if g < p else 2 * p - 1 - g  # noqa: E731
+    roundF = [[None] * m for _ in range(G)]
+    roundB = [[None] * m for _ in range(G)]
+    roundW = [[None] * m for _ in range(G)]
+    cap = G  # max micro-batches admitted at chunk 0 before their backward returns
+    total, done, t = 3 * G * m, 0, 0
+
+    while done < total:
+        for d in range(p):
+            chunks = (d, G - 1 - d)
+            chosen = None
+            # priority 1: a ready B (smallest (j, g))
+            best = None
+            for g in chunks:
+                for j in range(m):
+                    if roundB[g][j] is not None:
+                        continue
+                    dep = roundF[g][j] if g == G - 1 else roundB[g + 1][j]
+                    if dep is not None and dep < t and (best is None or (j, g) < best[:2]):
+                        best = (j, g, "B")
+            # priority 2: a ready F (respect the in-flight cap at chunk 0)
+            if best is None:
+                admitted = sum(1 for jj in range(m) if roundB[0][jj] is not None) + cap
+                for g in chunks:
+                    for j in range(m):
+                        if roundF[g][j] is not None:
+                            continue
+                        ready = (j < admitted) if g == 0 else (roundF[g - 1][j] is not None and roundF[g - 1][j] < t)
+                        if ready and (best is None or (j, g) < best[:2]):
+                            best = (j, g, "F")
+            # priority 3: a ready W (fill idle rounds)
+            if best is None:
+                for g in chunks:
+                    for j in range(m):
+                        if roundW[g][j] is not None:
+                            continue
+                        if roundB[g][j] is not None and roundB[g][j] < t and (best is None or (j, g) < best[:2]):
+                            best = (j, g, "W")
+            if best is not None:
+                j, g, typ = best
+                {"F": roundF, "B": roundB, "W": roundW}[typ][g][j] = t
+                done += 1
+        t += 1
+        if t > total + G:
+            raise RuntimeError("ZB-V scheduler failed to converge")
+    return roundF, roundB, roundW, t
+
+
+def train_step_pipeline_zbv(model, data_loader, tensor_shapes, device, dtype):
+    """ZB-V (V-shape Zero-Bubble) pipeline schedule (Qi et al., ICLR 2024)."""
+    pipeline_parallel._ZB_DEFER = True
+    try:
+        return _train_step_pipeline_zbv_impl(model, data_loader, tensor_shapes, device, dtype)
+    finally:
+        pipeline_parallel._ZB_DEFER = False
+
+
+def _train_step_pipeline_zbv_impl(model, data_loader, tensor_shapes, device, dtype):
+    pg = pgm.process_group_manager
+    p, r0, m = pg.pp_world_size, pg.pp_rank, data_loader.grad_acc_steps
+    G, dev = 2 * p, model.dev
+
+    batches = [next(data_loader) for _ in range(m)]  # deterministic prefetch (same on every rank)
+    roundF, roundB, roundW, num_rounds = _zbv_schedule(p, m)
+
+    # Project the global schedule onto this rank: which action runs each round, and which cross-device
+    # transfers are posted each round (a transfer is placed in the round its producer runs).
+    action_at = {}
+    send_specs, recv_specs = {}, {}
+
+    def add(table, t, item):
+        table.setdefault(t, []).append(item)
+
+    for g in range(G):
+        for j in range(m):
+            if dev(g) == r0:
+                action_at[roundF[g][j]] = ("F", g, j)
+                action_at[roundB[g][j]] = ("B", g, j)
+                action_at[roundW[g][j]] = ("W", g, j)
+            if g < G - 1 and dev(g) != dev(g + 1):  # forward activation edge g -> g+1
+                key = f"act:{g + 1}:{j}"
+                if dev(g) == r0:
+                    add(send_specs, roundF[g][j], (key, dev(g + 1)))
+                if dev(g + 1) == r0:
+                    add(recv_specs, roundF[g][j], (key, dev(g)))
+            if g > 0 and dev(g) != dev(g - 1):  # backward grad edge g -> g-1
+                key = f"grad:{g - 1}:{j}"
+                if dev(g) == r0:
+                    add(send_specs, roundB[g][j], (key, dev(g - 1)))
+                if dev(g - 1) == r0:
+                    add(recv_specs, roundB[g][j], (key, dev(g)))
+
+    avail, saved, wtasks, logging_loss = {}, {}, {}, 0.0
+    for t in range(num_rounds):
+        outbox = {}
+        action = action_at.get(t)
+        if action is not None:
+            typ, g, j = action
+            b = batches[j]
+            if typ == "F":
+                if g == 0:
+                    inp, out = None, model.forward(g, b["input_ids"].to(device), b["position_ids"].to(device), None)
+                else:
+                    inp = avail.pop(f"act:{g}:{j}")
+                    out = model.forward(g, None, b["position_ids"].to(device), inp)
+                if model.is_last(g):
+                    loss = F.cross_entropy(
+                        out.flatten(0, 1), b["target_ids"].to(device).flatten(), reduction="mean"
+                    )
+                    logging_loss += loss.item() / m
+                    saved[(g, j)] = (inp, loss)
+                else:
+                    saved[(g, j)] = (inp, out)
+                    key, cdev = f"act:{g + 1}:{j}", dev(g + 1)
+                    # Cut the graph at every chunk boundary (local turn included): the consumer sees a
+                    # fresh leaf, exactly like a received tensor, so each chunk backprops in isolation.
+                    if cdev == r0:
+                        avail[key] = out.detach().requires_grad_(True)
+                    else:
+                        outbox[key] = out
+            elif typ == "B":
+                inp, out = saved.pop((g, j))
+                out_grad = None if model.is_last(g) else avail.pop(f"grad:{g}:{j}")
+                start = len(pipeline_parallel._W_TASKS)
+                in_grad = _vshape_backward_input(inp, out, out_grad)
+                wtasks[(g, j)] = pipeline_parallel._W_TASKS[start:]
+                del pipeline_parallel._W_TASKS[start:]
+                if g > 0:
+                    key, cdev = f"grad:{g - 1}:{j}", dev(g - 1)
+                    (avail.__setitem__ if cdev == r0 else outbox.__setitem__)(key, in_grad)
+            else:  # W: drain this chunk/micro-batch's deferred weight grads
+                for task in wtasks.pop((g, j)):
+                    task()
+
+        sends = [(key, outbox[key], peer) for key, peer in send_specs.get(t, [])]
+        recvs = [(key, peer) for key, peer in recv_specs.get(t, [])]
+        avail.update(vshape_pipeline_communicate(device, dtype, tensor_shapes, sends, recvs))
 
     return logging_loss

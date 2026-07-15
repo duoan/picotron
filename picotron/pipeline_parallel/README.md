@@ -1,14 +1,14 @@
 # Pipeline Parallelism in picotron
 
 A from-scratch guide to pipeline parallelism (PP): **why** it exists, how the naive version wastes the
-cluster, how micro-batching and **1F1B** fix it, and then the two modern schedules
-(**Zero-Bubble**, **Interleaved 1F1B**) that attack the leftover pipeline *bubble*.
+cluster, how micro-batching and **1F1B** fix it, and then the three modern schedules
+(**Zero-Bubble**, **Interleaved 1F1B**, **ZB-V / V-shape**) that attack the leftover pipeline *bubble*.
 
 Everything here is implemented and gradient-validated on the gloo/CPU test harness, so you can read the
 code, run the tests, and reproduce the benchmarks without a GPU cluster.
 
 - Built-in schedules: `pipeline_parallel.py` — `train_step_pipeline_afab`, `train_step_pipeline_1f1b`
-- Advanced schedules: `pp_schedules.py` — `train_step_pipeline_zb` / `train_step_pipeline_interleaved`
+- Advanced schedules: `pp_schedules.py` — `train_step_pipeline_zb` / `train_step_pipeline_interleaved` / `train_step_pipeline_zbv`
 - Communication primitives: `pp_communications.py`
 - Tests / benchmark: `tests/test_pipeline_parallel.py`, `tests/bench_pp_schedules.py`
 - Slides: `teaching_slides.md` (`./render_slides.sh`)
@@ -97,15 +97,16 @@ picotron's default (`train_step_pipeline_1f1b`) and the foundation everything be
 
 ---
 
-## 5. Shrinking the bubble — two modern schedules
+## 5. Shrinking the bubble — three modern schedules
 
-`pp_schedules.py` adds two schedules from the last two years of PP research, each trading a different
+`pp_schedules.py` adds three schedules from the last two years of PP research, each trading a different
 resource to shrink the `(p-1)/m` bubble:
 
 | schedule | source | bubble | trades | wrapper + entry point |
 |---|---|---|---|---|
 | **Zero-Bubble (ZB-H1)** | Qi et al., ICLR 2024 ([2401.10241](https://arxiv.org/abs/2401.10241)) | `≈ 0` | extra activation memory for the W queue (~1× backward FLOPs) | `PipelineParallel` + `train_step_pipeline_zb` |
 | **Interleaved 1F1B** | Narayanan et al., Megatron-LM ([2104.04473](https://arxiv.org/abs/2104.04473)) | `(p-1)/(m·v)` | `v`× more comm, needs `m % p == 0` | `InterleavedPipelineParallel` + `train_step_pipeline_interleaved` |
+| **ZB-V (V-shape)** | Qi et al., ICLR 2024 ([2401.10241](https://arxiv.org/abs/2401.10241)) | `≈ 0` | 2 chunks/rank (params) + scheduling complexity; ~1F1B memory, no `v`× comm | `VShapePipelineParallel` + `train_step_pipeline_zbv` |
 
 `p` = pipeline stages, `m` = micro-batches per step, `v` = virtual stages per rank.
 
@@ -133,7 +134,28 @@ Give each rank `v` **non-contiguous** chunks. With `G = p·v` virtual stages lai
 triangles are `v`× thinner → bubble `(p-1)/(m·v)`. Cost: `v`× more cross-rank activation hops, and it
 requires `m % p == 0`.
 
-### Beyond these two — DualPipe (intentionally omitted)
+### Lever 3 — ZB-V (V-shape Zero-Bubble)
+
+![zb-v placement](figures/zbv.svg)
+
+Interleaved shrinks the bubble but pays `v`× comm; ZB-H1 removes the bubble but needs extra memory.
+**ZB-V combines both** with a V-shaped placement. Each rank holds exactly **2** of the `G = 2p` chunks:
+device `d` owns down-leg chunk `d` and up-leg chunk `2p-1-d` (`dev(g) = g if g < p else 2p-1-g`).
+Forward walks `0→1→…→2p-1`, whose devices trace `0..p-1` then `p-1..0` — a "V"; the bottom turn
+(`chunk p-1 → p`, both on device `p-1`) is a **local** hand-off, and the first + last chunk both live on
+device 0 (the loss returns to where the input entered). Every backward is split into **B + W** (reusing
+`_DeferredLinear`), and the comm-free W work fills the bubbles → **≈ zero bubble at ~1F1B memory**,
+without interleaved's `v`× communication.
+
+The optimal ZB-V ordering is intricate, so instead of a hand-written per-rank step table we **generate
+the schedule deterministically** from `(p, m)` (a small list scheduler with priority B > F > W, an
+in-flight cap for ~1F1B memory, and W drained into idle rounds — identical on every rank). Every
+cross-device transfer is pinned to the round its producer runs, so `vshape_pipeline_communicate` posts
+the matching send/recv **in the same round on both endpoints** — deadlock-free by construction and
+bit-exact vs the full-model reference (`grad_diff = 0` at `p = 2/4/8`). The local turn is graph-cut like
+any stage boundary (the consumer sees a fresh leaf), so each chunk backprops in isolation.
+
+### Beyond these three — DualPipe (intentionally omitted)
 
 DeepSeek-V3's **DualPipe** ([2412.19437](https://arxiv.org/abs/2412.19437)) pushes further: it runs
 **two micro-batch streams in opposite directions**, each rank holding the two stages symmetric about
@@ -173,7 +195,7 @@ torchrun --nproc_per_node 4 tests/test_pipeline_parallel.py   # p=4
 torchrun --nproc_per_node 8 tests/test_pipeline_parallel.py   # p=8
 ```
 
-Zero-Bubble and Interleaved match the reference **exactly** (`grad_diff = 0`) at `p = 2/4/8`.
+Zero-Bubble, Interleaved and ZB-V all match the reference **exactly** (`grad_diff = 0`) at `p = 2/4/8`.
 
 ---
 
@@ -208,15 +230,15 @@ activation memory — an honest ZB-H1 result on commodity GPUs.
 
 ## 9. Configuration / training integration
 
-`create_config.py --pp_engine {afab,1f1b,zb,interleaved}` (with `--num_virtual_stages` for the
+`create_config.py --pp_engine {afab,1f1b,zb,interleaved,zbv}` (with `--num_virtual_stages` for the
 interleaved engine) writes the choice into the config. In `train.py`:
 
 - `afab`, `1f1b`, `zb` are fully wired — Zero-Bubble is a drop-in over 1F1B because it reuses the
   `PipelineParallel` stage, so it shares the existing HF weight-materialization / checkpoint path.
-- `interleaved` uses the multi-chunk `InterleavedPipelineParallel` wrapper, which the HF
-  checkpoint-materialization path does not yet understand. It is implemented and gradient-validated on
-  the gloo/CPU and NCCL/GPU harnesses; wiring its multi-chunk layout into the HF training loop is left
-  as follow-up.
+- `interleaved` and `zbv` use multi-chunk stage wrappers (`InterleavedPipelineParallel` /
+  `VShapePipelineParallel`), which the HF checkpoint-materialization path does not yet understand. Both
+  are implemented and gradient-validated on the gloo/CPU and NCCL/GPU harnesses; wiring their
+  multi-chunk layout into the HF training loop is left as follow-up.
 
 ---
 

@@ -135,11 +135,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pp_engine",
         type=str,
-        help="pipeline parallel engine: afab, 1f1b, zb (Zero-Bubble); interleaved is "
-        "implemented + gradient-validated on the CPU harness (tests/bench_pp_schedules.py) but not "
-        "yet wired into the HF training path",
+        help="pipeline parallel engine: afab, 1f1b, zb (Zero-Bubble); interleaved (virtual "
+        "pipeline) and zbv (V-shape Zero-Bubble) are implemented + gradient-validated on the CPU/GPU "
+        "harness (tests/bench_pp_schedules.py) but not yet wired into the HF training path",
         default="1f1b",
-        choices=["afab", "1f1b", "zb", "interleaved"],
+        choices=["afab", "1f1b", "zb", "interleaved", "zbv"],
     )
     parser.add_argument(
         "--num_virtual_stages",

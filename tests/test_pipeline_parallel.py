@@ -145,6 +145,18 @@ def test_interleaved(cfg, device, num_virtual_stages=2):
     compare_owned_grads(model, ref_grads, f"interleaved(v={num_virtual_stages})")
 
 
+def test_zbv(cfg, device):
+    from picotron.pipeline_parallel.pp_schedules import (
+        VShapePipelineParallel,
+        train_step_pipeline_zbv,
+    )
+
+    dl = FakeDataLoader(cfg, GRAD_ACC_STEPS, MBS, SEQ, device)
+    model, stage, ref_grads = build_reference_and_stage(cfg, dl, device, VShapePipelineParallel)
+    run_schedule(stage, train_step_pipeline_zbv, dl, cfg, device)
+    compare_owned_grads(model, ref_grads, "zbv")
+
+
 def main():
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
@@ -177,6 +189,7 @@ def main():
     assert world_size > 1, "pipeline tests need pp_size >= 2 (torchrun --nproc_per_node 2)"
     test_zero_bubble(cfg, device)
     test_interleaved(cfg, device, num_virtual_stages=2)
+    test_zbv(cfg, device)
 
     dist.barrier()
     dist.destroy_process_group()

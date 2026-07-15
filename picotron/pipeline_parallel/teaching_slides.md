@@ -8,15 +8,15 @@ description: "From the 1F1B bubble to Zero-Bubble and Interleaved 1F1B"
 style: |
   section {
     font-family: 'Inter', 'Roboto', sans-serif;
-    font-size: 24px;
-    line-height: 1.35;
+    font-size: 22px;
+    line-height: 1.28;
   }
   section.lead h1 { font-size: 50px; }
-  h1 { font-size: 38px; }
-  h2 { font-size: 32px; }
-  pre, code { font-size: 19px; }
-  table { font-size: 21px; }
-  .small { font-size: 20px; }
+  h1 { font-size: 34px; }
+  h2 { font-size: 30px; }
+  pre, code { font-size: 16.5px; }
+  table { font-size: 19px; }
+  .small { font-size: 18px; }
   .muted { color: #888; }
   .cols { display: flex; gap: 1.2rem; }
   .cols > div { flex: 1; }
@@ -92,7 +92,7 @@ some devices idle. Relative to the `m` useful steps:
 
 $$ \text{bubble fraction} \;=\; \frac{\text{idle}}{\text{busy}} \;=\; \frac{p-1}{m} $$
 
-![w:560](figures/siboehm_gpipe_bubble.png)
+![w:460](figures/siboehm_gpipe_bubble.png)
 
 - More micro-batches (`m` ↑) → thinner triangles → smaller bubble (above: `m=1`→0.8, `m=4`→0.42)… but AFAB's activation memory ↑.
 - More stages (`p` ↑) → bigger bubble.
@@ -115,6 +115,69 @@ Same `(p-1)/m` bubble as AFAB, but activation memory is capped by pipeline **dep
 
 ---
 
+## 1F1B, step 1 — why reorder at all?
+
+AFAB is already pipelined, so why touch the order? **Memory.** A stage must keep each micro-batch's
+forward activations alive until *that* micro-batch's backward runs. AFAB does every backward *last*,
+so at the peak **all `m`** activation sets are pinned at once.
+
+1F1B keeps the exact same forward/backward work but **reorders** it: once warmup has filled the pipe,
+each forward is immediately followed by a backward — and that backward frees the oldest activation
+*before* the next forward allocates a new one.
+
+![w:720](figures/1f1b_reorder.svg)
+
+Same compute, same `(p-1)/m` bubble — but live activations drop from `m` (AFAB peak) to `~p`
+(1F1B, flat). At `m=100, p=4` that is ~25× less activation memory, for free.
+
+---
+
+## 1F1B, step 2 — the schedule: warmup / steady / cooldown
+
+Every rank runs three phases; the **warmup length is staggered by rank** so backwards start flowing
+back up the pipe as early as possible:
+
+$$ \text{warmup}(r) \;=\; p - r - 1 \qquad(\text{stage 0 warms up most; the last stage: } 0) $$
+
+![w:560](figures/1f1b_schedule.svg)
+
+- **Warmup** — rank `r` pushes `p-r-1` forwards to fill the pipe (no backward possible yet).
+- **Steady** — 1 forward + 1 backward per step: every stage busy, in-flight activations `~p`.
+- **Cooldown** — drain the `p-r-1` leftover backwards. The fill + drain triangles *are* the bubble.
+
+---
+
+## 1F1B, step 3 — the schedule in code
+
+```python
+# warmup is staggered by rank: earlier stages pre-load more forwards
+num_warmup   = min(pp_world_size - pp_rank - 1, grad_acc_steps)
+num_remaining = grad_acc_steps - num_warmup
+
+for _ in range(num_warmup):                    # 1. WARMUP — forwards only
+    x = recv_forward(); y = forward(x); send_forward(y)
+    input_tensors.append(x); output_tensors.append(y)
+
+x = recv_forward()                             # prime the steady state
+for i in range(num_remaining):                 # 2. STEADY — 1F + 1B per step
+    y  = forward(x)
+    dy = send_fwd_recv_bwd(y)                   # ONE batched P2P: send fwd act, recv bwd grad
+    input_tensors.append(x); output_tensors.append(y)
+    x_old, y_old = input_tensors.pop(0), output_tensors.pop(0)   # FIFO = oldest micro-batch
+    dx = backward(x_old, y_old, dy)            # this backward frees x_old's activations
+    x  = send_bwd_recv_fwd(dx)                  # (last iteration: plain send_backward)
+
+for _ in range(num_warmup):                    # 3. COOLDOWN — drain leftover backwards
+    x_old, y_old = input_tensors.pop(0), output_tensors.pop(0)
+    dy = recv_backward(); dx = backward(x_old, y_old, dy); send_backward(dx)
+```
+
+The **FIFO `pop(0)`** *is* the reorder: each backward consumes the *oldest* in-flight micro-batch, so
+`len(input_tensors) ≤ num_warmup + 1 ≈ p`. The fused **`send_fwd_recv_bwd` / `send_bwd_recv_fwd`**
+carry one activation down and one gradient up in a single deadlock-free P2P (details two slides on).
+
+---
+
 ## picotron's two built-in schedules — and our goal
 
 ```python
@@ -126,20 +189,21 @@ train_step_pipeline_1f1b   # 1 fwd / 1 bwd steady state — bubble (p-1)/m, boun
 Each rank holds a `PipelineParallel` stage: `embedding` (first), some `decoder_layers`,
 `final_norm` + `final_proj` (last). Communication is point-to-point on a ring.
 
-**Goal:** shrink the `(p-1)/m` bubble. Two levers, two trade-offs:
+**Goal:** shrink the `(p-1)/m` bubble. Two levers — then a schedule that combines them:
 
 | schedule | idea | trades |
 |---|---|---|
-| Zero-Bubble | split backward into B + W | W-queue activation memory (~1× FLOPs) |
+| Zero-Bubble (ZB-H1) | split backward into B + W | W-queue activation memory (~1× FLOPs) |
 | Interleaved 1F1B | `v` virtual stages per rank | `v`× more comm |
+| ZB-V (V-shape) | 2 V-placed chunks/rank **+** B+W split | 2 chunks/rank (params), scheduling complexity |
 
 ---
 
 ## The levers in one picture
 
-![w:1000](figures/dualpipe_deepseek.png)
+![w:880](figures/dualpipe_deepseek.png)
 
-<span class="muted">DeepSeek-V3 (arXiv:2412.19437). **Top — 1F1B:** the `(p-1)/m` baseline. **Middle — ZB1P:** backward split into **B** (input-grad, teal) + **W** (weight-grad, green) → **Lever 1**. (Interleaved 1F1B / Lever 2 is the orthogonal "`v` chunks per rank" axis.) The **bottom — DualPipe** row is the bidirectional schedule we leave as further reading — see the closing slide.</span>
+<span class="muted">DeepSeek-V3 (arXiv:2412.19437). **Top — 1F1B:** the `(p-1)/m` baseline. **Middle — ZB1P:** backward split into **B** (input-grad) + **W** (weight-grad) → **Lever 1**. **Bottom — DualPipe:** the bidirectional schedule we leave as further reading (Lever 2 = the orthogonal "`v` chunks/rank" axis).</span>
 
 ---
 
@@ -208,6 +272,40 @@ class InterleavedPipelineParallel(nn.Module):
 
 ---
 
+## Lever 3 — ZB-V: V-shape Zero-Bubble
+
+<span class="muted">Qi et al., ICLR 2024 — the "V-Schedule" (arXiv:2401.10241)</span>
+
+Combine both levers: **2 chunks per rank** (like interleaved) **+ B/W split** (like ZB). The trick is
+the **V placement** — device `d` owns chunk `d` (down-leg) and chunk `2p-1-d` (up-leg):
+
+![w:660](figures/zbv.svg)
+
+Forward walks the V (`0→…→2p-1`); the bottom turn is a **local** hand-off; the last chunk lands back
+on device 0. W work fills the bubbles → **≈ zero bubble at ~1F1B memory** (interleaved's memory win *and*
+ZB's bubble win, without interleaved's `v`× comm blow-up).
+
+---
+
+## ZB-V: placement + how we schedule it
+
+```python
+class VShapePipelineParallel(nn.Module):
+    self.owned = [rank, 2*p - 1 - rank]          # down-leg + up-leg chunk
+    def dev(self, g): return g if g < p else 2*p - 1 - g   # the V map
+```
+
+The optimal ZB-V ordering is intricate, so rather than hand-write a per-rank step table we **generate
+the schedule deterministically** from `(p, m)` (a tiny list scheduler: B > F > W priority, in-flight
+cap for ~1F1B memory, W drained into idle rounds). Every cross-device transfer is pinned to the round
+its producer runs, so `vshape_pipeline_communicate` posts matching send/recv **in the same round on
+both endpoints** — deadlock-free by construction.
+
+- `train_step_pipeline_zbv` — bit-exact vs the full-model reference (`grad_diff = 0` at `p = 2/4/8`).
+- Reuses the `_DeferredLinear` B/W split; the local turn is graph-cut like any boundary (fresh leaf).
+
+---
+
 ## Why batched P2P is mandatory
 
 Synchronous ring P2P deadlocks if every rank blocks on a send whose matching receive sits behind the
@@ -272,6 +370,10 @@ activation memory. An honest result. On a tiny CPU model the bubble is invisible
 - bubble `(p-1)/(m·v)`
 - cost: `v`× comm, needs `m % p == 0`
 
+**ZB-V (V-shape zero-bubble)**
+- 2 V-placed chunks/rank + B/W split
+- bubble `≈ 0` at ~1F1B memory, no `v`× comm
+
 </div><div>
 
 **Both**
@@ -286,7 +388,7 @@ activation memory. An honest result. On a tiny CPU model the bubble is invisible
 
 </div></div>
 
-<span class="muted">Wired into `create_config.py --pp_engine` / `train.py`: ZB is a drop-in; interleaved runs on the test+bench harness (gloo/CPU + NCCL/GPU).</span>
+<span class="muted">`create_config.py --pp_engine`: ZB is a drop-in; interleaved + ZB-V run on the test/bench harness.</span>
 
 ---
 

@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 300" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="26" font-size="17" fill="#28323b" font-weight="bold">The full 1F1B schedule (p=4, m=6). Number = micro-batch id.</text>
+
+  <!-- row backgrounds (idle shows through as grey) -->
+  <g fill="#eef1f3" stroke="#dde3e7">
+    <rect x="72" y="64" width="574" height="30"/>
+    <rect x="72" y="100" width="574" height="30"/>
+    <rect x="72" y="136" width="574" height="30"/>
+    <rect x="72" y="172" width="574" height="30"/>
+  </g>
+
+  <!-- stage / warmup labels -->
+  <g font-size="10" fill="#5b6770">
+    <text x="4" y="83">stage 0  w=3</text>
+    <text x="4" y="119">stage 1  w=2</text>
+    <text x="4" y="155">stage 2  w=1</text>
+    <text x="4" y="191">stage 3  w=0</text>
+  </g>
+
+  <!-- ================= device 0 (y=64) ================= -->
+  <g font-size="11">
+    <rect x="72"  y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="87"  y="84" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="106" y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="121" y="84" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="140" y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="155" y="84" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="174" y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="189" y="84" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="310" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="325" y="84" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="344" y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="359" y="84" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="378" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="393" y="84" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="412" y="64" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="427" y="84" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="446" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="461" y="84" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="514" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="529" y="84" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="582" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="597" y="84" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="616" y="64" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="631" y="84" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- ================= device 1 (y=100) ================= -->
+  <g font-size="11">
+    <rect x="106" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="121" y="120" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="140" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="155" y="120" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="174" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="189" y="120" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="276" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="291" y="120" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="310" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="325" y="120" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="344" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="359" y="120" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="378" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="393" y="120" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="412" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="427" y="120" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="446" y="100" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="461" y="120" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="480" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="495" y="120" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="548" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="563" y="120" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="582" y="100" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="597" y="120" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- ================= device 2 (y=136) ================= -->
+  <g font-size="11">
+    <rect x="140" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="155" y="156" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="174" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="189" y="156" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="242" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="257" y="156" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="276" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="291" y="156" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="310" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="325" y="156" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="344" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="359" y="156" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="378" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="393" y="156" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="412" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="427" y="156" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="446" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="461" y="156" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="480" y="136" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="495" y="156" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="514" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="529" y="156" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="548" y="136" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="563" y="156" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- ================= device 3 (y=172)  last stage, never idles ================= -->
+  <g font-size="11">
+    <rect x="174" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="189" y="192" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="208" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="223" y="192" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="242" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="257" y="192" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="276" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="291" y="192" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="310" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="325" y="192" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="344" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="359" y="192" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="378" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="393" y="192" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="412" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="427" y="192" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="446" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="461" y="192" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="480" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="495" y="192" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="514" y="172" width="30" height="30" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="529" y="192" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="548" y="172" width="30" height="30" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="563" y="192" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- time axis -->
+  <line x1="72" y1="210" x2="646" y2="210" stroke="#28323b" stroke-width="1.4"/>
+  <path d="M646,210 l-8,-4 l0,8 z" fill="#28323b"/>
+  <text x="655" y="214" font-size="11" fill="#8a97a0">time</text>
+
+  <!-- phase brackets -->
+  <g stroke="#8a97a0" stroke-width="1" fill="none">
+    <path d="M72,220 v6 h136 v-6"/>
+    <path d="M208,220 v6 h272 v-6"/>
+    <path d="M480,220 v6 h166 v-6"/>
+  </g>
+  <g font-size="12" text-anchor="middle">
+    <text x="140" y="244" fill="#c8682f">warmup / fill</text>
+    <text x="344" y="244" fill="#2f7da6" font-weight="bold">steady state: 1 forward + 1 backward</text>
+    <text x="563" y="244" fill="#c8682f">cooldown / drain</text>
+  </g>
+
+  <!-- legend + takeaway -->
+  <g font-size="11">
+    <rect x="72" y="262" width="16" height="14" rx="2" fill="#d6ebf4" stroke="#2f7da6"/><text x="94" y="273" fill="#5b6770">forward (F)</text>
+    <rect x="176" y="262" width="16" height="14" rx="2" fill="#cfe9d6" stroke="#3a9d5d"/><text x="198" y="273" fill="#5b6770">backward (B)</text>
+    <rect x="288" y="262" width="16" height="14" rx="2" fill="#eef1f3" stroke="#dde3e7"/><text x="310" y="273" fill="#5b6770">idle (bubble)</text>
+  </g>
+  <text x="430" y="273" font-size="11" fill="#28323b">warmup = <tspan fill="#c8682f" font-weight="bold">p - rank - 1</tspan> forwards; last stage warmup = 0.</text>
+</svg>

@@ -310,11 +310,11 @@ if __name__ == "__main__":
                 # Zero-Bubble reuses the PipelineParallel stage (B/W-split backward), so it is a
                 # drop-in over 1F1B with the same weight-materialization / checkpoint path.
                 loss = train_step_pipeline_zb(model, data_loader, tensor_shapes, device, dtype)
-            elif pp_engine == "interleaved":
-                # Uses the multi-chunk InterleavedPipelineParallel wrapper, which the HF
-                # checkpoint-materialization path does not yet understand. It is implemented and
-                # gradient-validated on the gloo/CPU harness; see tests/test_pipeline_parallel.py
-                # and tests/bench_pp_schedules.py.
+            elif pp_engine in ("interleaved", "zbv"):
+                # Both use a multi-chunk stage wrapper (InterleavedPipelineParallel / and the V-shape
+                # VShapePipelineParallel) which the HF checkpoint-materialization path does not yet
+                # understand. Both are implemented and gradient-validated on the gloo/CPU + NCCL/GPU
+                # harness; see tests/test_pipeline_parallel.py and tests/bench_pp_schedules.py.
                 raise NotImplementedError(
                     f"pp_engine='{pp_engine}' is validated via tests/bench_pp_schedules.py but not yet "
                     "wired into the HF checkpoint/training path (multi-chunk stage layout)."

@@ -94,6 +94,34 @@ def interleaved_pipeline_communicate(
     return recv_forward_tensor, recv_backward_tensor
 
 
+def vshape_pipeline_communicate(device, dtype, shape, sends, recvs):
+    """Batched point-to-point for the ZB-V (V-shape) schedule over arbitrary peers.
+
+    Unlike the ring helpers above, a V-shape stage does not always talk to ``pp_rank ± 1``: the
+    down-leg sends toward higher device indices, the up-leg toward lower ones, and the two legs on a
+    device have different neighbours. So callers pass explicit peer ranks.
+
+    ``sends`` is a list of ``(key, tensor, peer_pp_rank)`` and ``recvs`` a list of
+    ``(key, peer_pp_rank)``. Every op is fused into one :func:`dist.batch_isend_irecv` group
+    (deadlock-free). Because the ZB-V schedule is generated identically on every rank, each round posts
+    exactly matching sends/recvs; sorting both by ``(peer, key)`` makes the per-pair op order identical
+    on the two endpoints, so P2P ops match FIFO. Returns ``{key: recv_tensor}``.
+    """
+    pg = pgm.process_group_manager
+    ops, bufs = [], {}
+    for key, tensor, peer in sorted(sends, key=lambda s: (s[2], s[0])):
+        ops.append(dist.P2POp(dist.isend, tensor, pg.pp_group_ids[peer]))
+    for key, peer in sorted(recvs, key=lambda r: (r[1], r[0])):
+        buf = torch.empty(shape, requires_grad=True, device=device, dtype=dtype)
+        bufs[key] = buf
+        ops.append(dist.P2POp(dist.irecv, buf, pg.pp_group_ids[peer]))
+    if ops:
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
+        _device_synchronize()
+    return bufs
+
+
 def bidirectional_pipeline_communicate(operation, send_tensor, recv_shapes, device, dtype):
     global STEP
     global VERBOSE

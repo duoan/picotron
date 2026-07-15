@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 350" font-family="Helvetica, Arial, sans-serif">
+  <text x="20" y="24" font-size="17" fill="#28323b" font-weight="bold">The reorder: run each backward as early as possible (stage 0, m=6)</text>
+
+  <!-- ============================ AFAB row ============================ -->
+  <text x="20" y="66" font-size="15" fill="#2f7da6" font-weight="bold">AFAB</text>
+
+  <!-- AFAB cells: F0..F5 B0..B5 (y=48) -->
+  <g font-size="12">
+    <rect x="112" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="139" y="67" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="170" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="197" y="67" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="228" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="255" y="67" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="286" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="313" y="67" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="344" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="371" y="67" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="402" y="48" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="429" y="67" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="460" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="487" y="67" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="518" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="545" y="67" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="576" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="603" y="67" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="634" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="661" y="67" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="692" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="719" y="67" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="750" y="48" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="777" y="67" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- AFAB alive-activation bars (baseline 168, unit 14): 1 2 3 4 5 6 5 4 3 2 1 -->
+  <g fill="#f0c9a8" stroke="#c8682f" stroke-width="0.8">
+    <rect x="119" y="154" width="40" height="14"/>
+    <rect x="177" y="140" width="40" height="28"/>
+    <rect x="235" y="126" width="40" height="42"/>
+    <rect x="293" y="112" width="40" height="56"/>
+    <rect x="351" y="98"  width="40" height="70"/>
+    <rect x="409" y="84"  width="40" height="84"/>
+    <rect x="467" y="98"  width="40" height="70"/>
+    <rect x="525" y="112" width="40" height="56"/>
+    <rect x="583" y="126" width="40" height="42"/>
+    <rect x="641" y="140" width="40" height="28"/>
+    <rect x="699" y="154" width="40" height="14"/>
+  </g>
+  <line x1="112" y1="168" x2="804" y2="168" stroke="#28323b" stroke-width="1.2"/>
+  <text x="20" y="112" font-size="11" fill="#c8682f"># live</text>
+  <text x="20" y="126" font-size="11" fill="#c8682f">activations</text>
+  <text x="429" y="80" font-size="12" fill="#c8682f" font-weight="bold">peak = m = 6</text>
+
+  <!-- ============================ 1F1B row ============================ -->
+  <text x="20" y="236" font-size="15" fill="#3a9d5d" font-weight="bold">1F1B</text>
+
+  <!-- 1F1B cells: F0 F1 F2 F3 B0 F4 B1 F5 B2 B3 B4 B5 (y=218) -->
+  <g font-size="12">
+    <rect x="112" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="139" y="237" text-anchor="middle" fill="#1c3f52">F0</text>
+    <rect x="170" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="197" y="237" text-anchor="middle" fill="#1c3f52">F1</text>
+    <rect x="228" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="255" y="237" text-anchor="middle" fill="#1c3f52">F2</text>
+    <rect x="286" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="313" y="237" text-anchor="middle" fill="#1c3f52">F3</text>
+    <rect x="344" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="371" y="237" text-anchor="middle" fill="#1f4a33">B0</text>
+    <rect x="402" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="429" y="237" text-anchor="middle" fill="#1c3f52">F4</text>
+    <rect x="460" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="487" y="237" text-anchor="middle" fill="#1f4a33">B1</text>
+    <rect x="518" y="218" width="54" height="28" rx="3" fill="#d6ebf4" stroke="#2f7da6"/><text x="545" y="237" text-anchor="middle" fill="#1c3f52">F5</text>
+    <rect x="576" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="603" y="237" text-anchor="middle" fill="#1f4a33">B2</text>
+    <rect x="634" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="661" y="237" text-anchor="middle" fill="#1f4a33">B3</text>
+    <rect x="692" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="719" y="237" text-anchor="middle" fill="#1f4a33">B4</text>
+    <rect x="750" y="218" width="54" height="28" rx="3" fill="#cfe9d6" stroke="#3a9d5d"/><text x="777" y="237" text-anchor="middle" fill="#1f4a33">B5</text>
+  </g>
+
+  <!-- 1F1B alive bars (baseline 338, unit 14): 1 2 3 4 3 4 3 4 3 2 1 -->
+  <g fill="#bfe0c8" stroke="#3a9d5d" stroke-width="0.8">
+    <rect x="119" y="324" width="40" height="14"/>
+    <rect x="177" y="310" width="40" height="28"/>
+    <rect x="235" y="296" width="40" height="42"/>
+    <rect x="293" y="282" width="40" height="56"/>
+    <rect x="351" y="296" width="40" height="42"/>
+    <rect x="409" y="282" width="40" height="56"/>
+    <rect x="467" y="296" width="40" height="42"/>
+    <rect x="525" y="282" width="40" height="56"/>
+    <rect x="583" y="296" width="40" height="42"/>
+    <rect x="641" y="310" width="40" height="28"/>
+    <rect x="699" y="324" width="40" height="14"/>
+  </g>
+  <line x1="112" y1="338" x2="804" y2="338" stroke="#28323b" stroke-width="1.2"/>
+  <text x="20" y="282" font-size="11" fill="#3a9d5d"># live</text>
+  <text x="20" y="296" font-size="11" fill="#3a9d5d">activations</text>
+  <text x="360" y="278" font-size="12" fill="#3a9d5d" font-weight="bold">peak &#8776; p = 4  (flat)</text>
+</svg>
